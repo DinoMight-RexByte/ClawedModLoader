@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Clawed Mod Manager banner placeholder</title>
+  <desc id="desc">A simple geometric banner placeholder for future product art.</desc>
+  <rect width="1200" height="420" fill="#111318"/>
+  <path d="M0 300c180-70 340-74 480-12s293 71 460 26c101-27 188-32 260-16v122H0V300Z" fill="#1f2630"/>
+  <path d="M110 76h980v188H110z" rx="20" fill="#191c23"/>
+  <path d="M230 116h140l-42 108H188l42-108Zm245 0h140l-42 108H433l42-108Zm245 0h140l-42 108H678l42-108Z" fill="#4fd1c5"/>
+</svg>

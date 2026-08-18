@@ -1,0 +1,18 @@
+node_modules/
+.codex/
+dist/
+release/
+coverage/
+playwright-report/
+test-results/
+.vite/
+*.log
+.DS_Store
+
+# Private planning, AI context, and internal documentation
+/docs/
+/prompts/
+/AGENTS.md
+**/AGENTS.md
+/PLANS.md
+/README.md

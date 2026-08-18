@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">Clawed Mod Manager app icon placeholder</title>
+  <desc id="desc">A square placeholder app icon for future Windows icon generation.</desc>
+  <rect width="256" height="256" rx="48" fill="#111318"/>
+  <path d="M128 30 207 65v57c0 53-31 88-79 103-48-15-79-50-79-103V65l79-35Z" fill="#4fd1c5"/>
+  <path d="M95 85h29l-21 88H74l21-88Zm53 0h29l-21 88h-29l21-88Z" fill="#0a1014"/>
+</svg>

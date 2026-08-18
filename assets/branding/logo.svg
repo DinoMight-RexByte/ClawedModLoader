@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">Clawed Mod Manager logo placeholder</title>
+  <desc id="desc">A placeholder CMM shield mark for future replacement.</desc>
+  <rect width="64" height="64" rx="12" fill="#111318"/>
+  <path d="M32 8 52 17v14c0 13-8 22-20 25-12-3-20-12-20-25V17l20-9Z" fill="#4fd1c5"/>
+  <path d="M24 22h7l-5 20h-7l5-20Zm13 0h7l-5 20h-7l5-20Z" fill="#0a1014"/>
+</svg>

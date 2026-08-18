@@ -1,0 +1,132 @@
+{
+  "name": "clawed-mod-manager",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Windows desktop mod manager and launcher for Clawed.",
+  "author": "Clawed Mod Manager Contributors",
+  "type": "module",
+  "main": "dist/main/index.cjs",
+  "packageManager": "npm@11.11.0",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:renderer": "vite --config vite.renderer.config.ts --host 127.0.0.1",
+    "dev:electron": "wait-on http://127.0.0.1:5173 && npm run build:main && npm run build:preload && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "start": "npm run build && electron .",
+    "clean": "rimraf dist coverage playwright-report test-results",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:live:clawed": "npm run test:live:clawed:service && npm run test:live:clawed:external-ue4ss && npm run test:live:clawed:visible && npm run test:live:clawed:visible-electron && npm run test:live:clawed:electron",
+    "test:live:clawed:service": "cross-env CMM_LIVE_CLAWED_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveDeployment.test.ts",
+    "test:live:clawed:electron": "npm run build && cross-env CMM_LIVE_CLAWED_ELECTRON_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveElectron.test.ts",
+    "test:live:clawed:external-ue4ss": "cross-env CMM_LIVE_CLAWED_EXTERNAL_UE4SS_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveExternalUe4ssZip.test.ts",
+    "test:live:clawed:pak-order": "cross-env CMM_LIVE_CLAWED_PAK_ORDER=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLivePakOrder.test.ts",
+    "test:live:clawed:pak-new-package": "cross-env CMM_LIVE_CLAWED_PAK_ORDER=1 CMM_PAK_ORDER_CONTAINER_FORMAT=iostore CMM_PAK_ORDER_INCLUDE_ASSET_REGISTRY=1 CMM_PAK_ORDER_PROBE_PACKAGE=/Game/CMMNewPackageValidation/Textures/CMMNewTexture vitest run --config vitest.live.config.ts scripts/live-validation/cmmLivePakOrder.test.ts",
+    "test:live:clawed:runtime-features": "cross-env CMM_LIVE_CLAWED_RUNTIME_FEATURES=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveRuntimeFeatures.test.ts",
+    "test:live:clawed:visible": "cross-env CMM_LIVE_CLAWED_VISIBLE_MOD_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveVisibleMod.test.ts",
+    "test:live:clawed:visible-electron": "npm run build && cross-env CMM_LIVE_CLAWED_ELECTRON_VISIBLE_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveElectronVisibleMod.test.ts",
+    "test:live:clawed:character": "cross-env CMM_LIVE_CLAWED_CHARACTER_RESEARCH=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmCharacterResearch.test.ts",
+    "test:live:clawed:restore": "cross-env CMM_LIVE_CLAWED_RESTORE=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmRestoreActiveDeployment.test.ts",
+    "test:e2e": "playwright test --pass-with-no-tests",
+    "build:main": "vite build --config vite.main.config.ts",
+    "build:preload": "vite build --config vite.preload.config.ts",
+    "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build": "npm run clean && npm run build:main && npm run build:preload && npm run build:renderer",
+    "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
+    "package:manual-smoke": "node scripts/createManualSmokePackage.mjs",
+    "package:manual-logo-test": "node scripts/createManualTextureOverridePackage.mjs",
+    "package:manual-qa": "npm run package:manual-smoke && npm run package:manual-logo-test && node scripts/createManualQaReadme.mjs",
+    "package:official-launch-mods": "node scripts/createOfficialLaunchBundle.mjs",
+    "package:official-launch": "npm run package && npm run package:official-launch-mods",
+    "package:coop-catchup": "node scripts/createCoopCatchupTeleportPackage.mjs",
+    "package:coop-session-guard": "node scripts/createCoopSessionGuardPackage.mjs",
+    "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
+    "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
+    "package": "npm run build && electron-builder --dir && npm run package:manual-smoke",
+    "dist": "npm run build && electron-builder && npm run package:manual-smoke"
+  },
+  "cmm": {
+    "status": "ux-release-hardening",
+    "requiredVerificationScripts": [
+      "lint",
+      "typecheck",
+      "test:unit",
+      "test:integration",
+      "build",
+      "test:e2e",
+      "verify"
+    ]
+  },
+  "build": {
+    "appId": "com.clawedmodmanager.app",
+    "productName": "Clawed Mod Manager",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/branding",
+        "to": "branding"
+      },
+      {
+        "from": "assets/runtime",
+        "to": "runtime"
+      },
+      {
+        "from": ".codex/clawed-game-file-map/20260814-current",
+        "to": "clawed-game-file-map/20260814-current"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "lucide-react": "^1.31.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1",
+    "zod": "^4.4.3",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/three": "^0.185.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "autoprefixer": "^10.5.4",
+    "concurrently": "^10.0.4",
+    "cross-env": "^10.1.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "eslint": "^10.8.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.4",
+    "postcss": "^8.5.26",
+    "rimraf": "^6.1.3",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10",
+    "wait-on": "^9.1.0"
+  }
+}
