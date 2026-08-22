@@ -36,7 +36,7 @@ const liveResearchEnabled =
   process.env.CMM_LIVE_CLAWED_CHARACTER_RESEARCH === "1";
 const defaultClawedInstallPath =
   "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Clawed";
-const bundledUe4ssVersion = "ue4ss-experimental-latest-1c1a1497";
+const bundledUe4ssVersion = "ue4ss-v3.0.1-lts";
 
 class FakeStorageService implements StorageServiceContract {
   constructor(private readonly layout: AppStorageLayout) {}
@@ -97,11 +97,9 @@ describe.runIf(liveResearchEnabled)("live Clawed character framework research", 
       ),
       bundledUe4ssVersion,
       bundledUe4ssCompatibility: {
-        status: "validated",
+        status: "unvalidated",
         message:
-          "Packaged UE4SS experimental-latest commit 1c1a1497 loads Lua mods and honors generated mods.txt Lua startup order on Clawed build 24719259.",
-        technicalDetail:
-          "Live validation on 2026-08-13 loaded the official nested layout through the local dwmapi proxy and observed generated .clawedmod Lua startup in CMM profile order."
+          "Packaged UE4SS v3.0.1 LTS has not been validated as the current bundled default for this Clawed build."
       }
     });
     const gameAdapter = new ClawedGameAdapter();

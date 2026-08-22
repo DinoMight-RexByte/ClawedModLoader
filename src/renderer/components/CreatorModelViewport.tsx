@@ -1,11 +1,12 @@
 import type { ReactElement } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AmbientLight,
   Box3,
   Color,
   DirectionalLight,
   GridHelper,
+  Group,
   MeshStandardMaterial,
   PerspectiveCamera,
   Scene,
@@ -23,31 +24,55 @@ import type {
   CreatorModelPreviewPayload,
   CreatorModelPreviewResult
 } from "../../shared/contracts/app";
+import { createSkeletonOverlays } from "./creatorSkeletonOverlay";
 
 interface CreatorModelViewportProps {
   preview: CreatorModelPreviewResult | null;
+  previews?: CreatorModelPreviewResult[];
   busy: boolean;
   error: string | null;
 }
 
 export function CreatorModelViewport({
   preview,
+  previews,
   busy,
   error
 }: CreatorModelViewportProps): ReactElement {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
-  const model =
-    preview?.status === "available" || preview?.status === "ready"
-      ? preview.model
-      : null;
-  const metadata = preview?.metadata ?? emptyModelPreviewMetadata();
-  const viewportState = getViewportState(preview, busy, error, renderError);
+  const [renderWarning, setRenderWarning] = useState<string | null>(null);
+  const previewItems = useMemo(
+    () => (previews ? previews : preview ? [preview] : []),
+    [preview, previews]
+  );
+  const modelItems = useMemo(
+    () =>
+      previewItems
+        .map((item) =>
+          (item.status === "available" || item.status === "ready") && item.model
+            ? item.model
+            : null
+        )
+        .filter(
+          (item): item is CreatorModelPreviewPayload => item !== null
+        ),
+    [previewItems]
+  );
+  const metadata = previewItems[0]?.metadata ?? emptyModelPreviewMetadata();
+  const viewportState = getViewportState(
+    previewItems,
+    busy,
+    error,
+    renderError,
+    renderWarning
+  );
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !model) {
+    if (!canvas || modelItems.length === 0) {
       setRenderError(null);
+      setRenderWarning(null);
       return;
     }
 
@@ -70,6 +95,7 @@ export function CreatorModelViewport({
     });
 
     setRenderError(null);
+    setRenderWarning(null);
     scene.background = new Color("#111827");
     scene.add(new AmbientLight("#ffffff", 0.8));
     const keyLight = new DirectionalLight("#ffffff", 1.2);
@@ -83,18 +109,43 @@ export function CreatorModelViewport({
     scene.add(grid);
     observer.observe(canvas);
 
-    void loadPreviewObject(model)
-      .then((object) => {
+    void Promise.allSettled(modelItems.map((model) => loadPreviewObject(model)))
+      .then((results) => {
+        const objects = results
+          .filter(
+            (result): result is PromiseFulfilledResult<Object3D> =>
+              result.status === "fulfilled"
+          )
+          .map((result) => result.value);
+        const failedCount = results.length - objects.length;
         if (disposed) {
-          disposeObject(object);
+          objects.forEach(disposeObject);
           return;
         }
+        if (!objects.length) {
+          setRenderError("Model preview failed");
+          return;
+        }
+        if (failedCount > 0) {
+          setRenderWarning(
+            `${failedCount} selected model${failedCount === 1 ? "" : "s"} could not be rendered.`
+          );
+        }
 
-        prepareObject(object);
-        frameObject(camera, object);
-        scene.add(object);
+        const group = new Group();
+        const skeletonHelpers: Object3D[] = [];
+        const centerOffset = (objects.length - 1) / 2;
+        objects.forEach((object, index) => {
+          prepareObject(object);
+          object.position.x += (index - centerOffset) * 2;
+          group.add(object);
+          skeletonHelpers.push(...createSkeletonOverlays(object));
+        });
+        frameObject(camera, group);
+        scene.add(group);
+        skeletonHelpers.forEach((helper) => scene.add(helper));
         const animate = () => {
-          object.rotation.y += 0.008;
+          group.rotation.y += 0.008;
           renderer.render(scene, camera);
           frame = window.requestAnimationFrame(animate);
         };
@@ -113,7 +164,7 @@ export function CreatorModelViewport({
       scene.traverse(disposeObject);
       renderer.dispose();
     };
-  }, [model]);
+  }, [modelItems]);
 
   return (
     <section
@@ -130,7 +181,7 @@ export function CreatorModelViewport({
       </div>
       <div className="grid min-w-0 gap-4">
         <div className="relative min-h-96 min-w-0 overflow-hidden rounded-md border border-app-border bg-app-surfaceRaised">
-          {model && !renderError ? (
+          {modelItems.length > 0 && !renderError ? (
             <canvas
               aria-label="Model preview"
               className="block h-96 w-full"
@@ -309,12 +360,19 @@ function MetadataList({
 }
 
 function getViewportState(
-  preview: CreatorModelPreviewResult | null,
+  previews: CreatorModelPreviewResult[],
   busy: boolean,
   error: string | null,
-  renderError: string | null
+  renderError: string | null,
+  renderWarning: string | null
 ): { title: string; detail: string | null } {
-  const problem = preview?.problems[0];
+  const preview = previews[0] ?? null;
+  const problem =
+    previews.flatMap((item) => item.problems)[0] ?? preview?.problems[0];
+  const visibleModels = previews.filter(
+    (item) =>
+      (item.status === "available" || item.status === "ready") && item.model
+  );
   if (busy) {
     return { title: "Loading model preview", detail: null };
   }
@@ -324,7 +382,19 @@ function getViewportState(
       detail: error ?? renderError ?? problem?.message ?? null
     };
   }
-  if (preview?.status === "available" || preview?.status === "ready") {
+  if (visibleModels.length > 0) {
+    if (renderWarning) {
+      return {
+        title: "Model previews partially visible",
+        detail: renderWarning
+      };
+    }
+    if (visibleModels.length > 1) {
+      return {
+        title: "Model previews visible",
+        detail: `${visibleModels.length} files in the viewport`
+      };
+    }
     return {
       title: "Model preview available",
       detail:
@@ -352,7 +422,7 @@ function getViewportState(
       title: "No renderable model preview available",
       detail:
         preview?.problems[0]?.message ??
-        "Select a mesh asset with direct decoded data, a cached normalized preview, or a package preview."
+        "Select a model asset with direct decoded data, a cached normalized preview, or a package preview."
     };
   }
   return { title: "No model preview available", detail: null };
@@ -393,6 +463,9 @@ function previewSourceLabel(
   if (source === "generated") {
     return "Generated package preview";
   }
+  if (source === "packagePayload") {
+    return "Package model payload";
+  }
   return "User-owned package preview";
 }
 
@@ -402,6 +475,9 @@ function meshTypeLabel(value: CreatorModelPreviewMetadata["meshType"]): string {
   }
   if (value === "skeletalMesh") {
     return "SkeletalMesh";
+  }
+  if (value === "skeleton") {
+    return "Skeleton";
   }
   return "unknown";
 }
@@ -442,6 +518,18 @@ function frameObject(camera: PerspectiveCamera, object: Object3D): void {
   const box = new Box3().setFromObject(object);
   const size = box.getSize(new Vector3());
   const center = box.getCenter(new Vector3());
+  if (
+    !Number.isFinite(size.x) ||
+    !Number.isFinite(size.y) ||
+    !Number.isFinite(size.z)
+  ) {
+    camera.position.set(1.4, 1.1, 3);
+    camera.lookAt(0, 0, 0);
+    camera.near = 0.01;
+    camera.far = 100;
+    camera.updateProjectionMatrix();
+    return;
+  }
   const largest = Math.max(size.x, size.y, size.z, 0.5);
   const distance = largest / (2 * Math.tan((camera.fov * Math.PI) / 360));
   object.position.sub(center);
@@ -453,13 +541,16 @@ function frameObject(camera: PerspectiveCamera, object: Object3D): void {
 }
 
 function disposeObject(object: Object3D): void {
-  const mesh = object as Mesh;
-  if (!mesh.isMesh) {
+  const renderable = object as Mesh & {
+    geometry?: { dispose(): void };
+    material?: Material | Material[];
+  };
+  renderable.geometry?.dispose();
+  if (!renderable.material) {
     return;
   }
-  mesh.geometry?.dispose();
-  const materials = Array.isArray(mesh.material)
-    ? mesh.material
-    : [mesh.material as Material];
+  const materials = Array.isArray(renderable.material)
+    ? renderable.material
+    : [renderable.material];
   materials.forEach((material) => material.dispose());
 }

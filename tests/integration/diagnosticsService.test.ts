@@ -206,6 +206,34 @@ describe("diagnostics service", () => {
       processSupervisor: new FakeProcessSupervisor(),
       launchService: new FakeLaunchService(),
       deploymentService,
+      packagedRuntimeValidationService: {
+        getStatus: () => ({
+          id: "packagedRuntimeValidationService",
+          label: "Packaged Runtime Validation Service",
+          status: "ready" as const,
+          detail: "fake"
+        }),
+        validate: async () => ({
+          status: "blocked" as const,
+          evidencePath: null,
+          recording: null,
+          problems: []
+        })
+      },
+      unrealMappingsService: {
+        getStatus: () => ({
+          id: "unrealMappingsService",
+          label: "Unreal Mappings Service",
+          status: "ready" as const,
+          detail: "fake"
+        }),
+        generateMappings: async () => ({
+          status: "blocked" as const,
+          mappingsPath: null,
+          evidencePath: null,
+          problems: []
+        })
+      },
       runtimeManager,
       modLibraryService,
       externalImportService,

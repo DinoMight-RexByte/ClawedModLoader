@@ -15,11 +15,15 @@ import JSZip from "jszip";
 
 import {
   ImportUe4ssRuntimeResultSchema,
+  RecordUe4ssRuntimeValidationRequestSchema,
+  RecordUe4ssRuntimeValidationResultSchema,
   RuntimeSnapshotSchema,
   Ue4ssRuntimeInstallSchema,
   type ImportUe4ssRuntimeRequest,
   type ImportUe4ssRuntimeResult,
   type ModProblem,
+  type RecordUe4ssRuntimeValidationRequest,
+  type RecordUe4ssRuntimeValidationResult,
   type RuntimeSnapshot,
   type ServiceStatus,
   type Ue4ssRuntimeInstall
@@ -84,7 +88,8 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
   }
 
   async getRuntimeSnapshot(
-    currentSteamBuildId?: string | null
+    currentSteamBuildId?: string | null,
+    currentFingerprintSha256?: string | null
   ): Promise<RuntimeSnapshot> {
     const runtime = await this.readRuntimeInstall();
     if (!runtime) {
@@ -106,12 +111,17 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
 
     const runtimeForSnapshot = this.runtimeWithBuildReleaseValidation(
       runtime,
-      currentSteamBuildId
+      currentSteamBuildId,
+      currentFingerprintSha256
     );
     const validationProblems = await this.validateRuntimeInstall(runtime);
     const releaseProblems =
       validationProblems.length === 0
-        ? this.runtimeReleaseProblems(runtimeForSnapshot, currentSteamBuildId)
+        ? this.runtimeReleaseProblems(
+            runtimeForSnapshot,
+            currentSteamBuildId,
+            currentFingerprintSha256
+          )
         : [];
     return RuntimeSnapshotSchema.parse({
       ue4ss: runtimeForSnapshot,
@@ -122,7 +132,9 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
             ? "incompatible"
           : runtimeForSnapshot.releaseValidation === "UNVALIDATED"
             ? "unvalidated"
-            : "configured",
+          : runtimeForSnapshot.releaseValidation === "VALIDATED"
+            ? "validated"
+            : "incompatible",
       problems: [...validationProblems, ...releaseProblems]
     });
   }
@@ -440,6 +452,162 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
     }
   }
 
+  async recordUe4ssRuntimeValidation(
+    request: RecordUe4ssRuntimeValidationRequest
+  ): Promise<RecordUe4ssRuntimeValidationResult> {
+    const validationRequest =
+      RecordUe4ssRuntimeValidationRequestSchema.parse(request);
+    const runtime = await this.readRuntimeInstall();
+    if (!runtime) {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "blocked",
+        runtime: null,
+        problems: [
+          modProblem(
+            "error",
+            "UE4SS_RUNTIME_MISSING",
+            "Import a user UE4SS runtime before recording validation evidence."
+          )
+        ]
+      });
+    }
+
+    if (runtime.source !== "user") {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "blocked",
+        runtime,
+        problems: [
+          modProblem(
+            "error",
+            "UE4SS_RUNTIME_VALIDATION_SOURCE_BLOCKED",
+            "Only user-imported UE4SS runtimes can receive user-runtime validation evidence."
+          )
+        ]
+      });
+    }
+
+    const validationProblems = await this.validateRuntimeInstall(runtime);
+    if (validationProblems.some((problem) => problem.severity === "error")) {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "failed",
+        runtime,
+        problems: validationProblems
+      });
+    }
+
+    const updatedRuntime = Ue4ssRuntimeInstallSchema.parse({
+      ...runtime,
+      source: "user",
+      releaseValidation: validationRequest.status,
+      validation: {
+        ...validationRequest,
+        validatedAt: new Date().toISOString(),
+        sourceSha256: runtime.sourceSha256
+      }
+    });
+    await atomicWriteJson(await this.getRuntimeIndexPath(), updatedRuntime);
+    await this.logger?.log({
+      category: "RUNTIME",
+      action:
+        validationRequest.status === "VALIDATED"
+          ? "ue4ss_user_runtime_validated"
+          : "ue4ss_user_runtime_incompatible",
+      result: validationRequest.status === "VALIDATED" ? "ok" : "blocked",
+      errorCode:
+        validationRequest.status === "INCOMPATIBLE"
+          ? "UE4SS_USER_RUNTIME_INCOMPATIBLE"
+          : undefined
+    });
+
+    return RecordUe4ssRuntimeValidationResultSchema.parse({
+      status: "recorded",
+      runtime: updatedRuntime,
+      problems: this.runtimeReleaseProblems(
+        updatedRuntime,
+        validationRequest.steamBuildId,
+        validationRequest.fingerprintSha256
+      )
+    });
+  }
+
+  async recordBundledUe4ssRuntimeValidation(
+    request: RecordUe4ssRuntimeValidationRequest
+  ): Promise<RecordUe4ssRuntimeValidationResult> {
+    const validationRequest =
+      RecordUe4ssRuntimeValidationRequestSchema.parse(request);
+    const runtime = await this.readRuntimeInstall();
+    if (!runtime) {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "blocked",
+        runtime: null,
+        problems: [
+          modProblem(
+            "error",
+            "UE4SS_RUNTIME_MISSING",
+            "Install the packaged UE4SS runtime before recording validation evidence."
+          )
+        ]
+      });
+    }
+
+    if (runtime.source !== "bundled") {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "blocked",
+        runtime,
+        problems: [
+          modProblem(
+            "error",
+            "UE4SS_BUNDLED_RUNTIME_VALIDATION_SOURCE_BLOCKED",
+            "Only the packaged UE4SS runtime can receive packaged-runtime validation evidence."
+          )
+        ]
+      });
+    }
+
+    const validationProblems = await this.validateRuntimeInstall(runtime);
+    if (validationProblems.some((problem) => problem.severity === "error")) {
+      return RecordUe4ssRuntimeValidationResultSchema.parse({
+        status: "failed",
+        runtime,
+        problems: validationProblems
+      });
+    }
+
+    const updatedRuntime = Ue4ssRuntimeInstallSchema.parse({
+      ...runtime,
+      source: "bundled",
+      releaseValidation: validationRequest.status,
+      validation: {
+        ...validationRequest,
+        validatedAt: new Date().toISOString(),
+        sourceSha256: runtime.sourceSha256
+      }
+    });
+    await atomicWriteJson(await this.getRuntimeIndexPath(), updatedRuntime);
+    await this.logger?.log({
+      category: "RUNTIME",
+      action:
+        validationRequest.status === "VALIDATED"
+          ? "ue4ss_bundled_runtime_validated"
+          : "ue4ss_bundled_runtime_incompatible",
+      result: validationRequest.status === "VALIDATED" ? "ok" : "blocked",
+      errorCode:
+        validationRequest.status === "INCOMPATIBLE"
+          ? "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE"
+          : undefined
+    });
+
+    return RecordUe4ssRuntimeValidationResultSchema.parse({
+      status: "recorded",
+      runtime: updatedRuntime,
+      problems: this.runtimeReleaseProblems(
+        updatedRuntime,
+        validationRequest.steamBuildId,
+        validationRequest.fingerprintSha256
+      )
+    });
+  }
+
   private async readRuntimeInstall(): Promise<Ue4ssRuntimeInstall | null> {
     try {
       const runtime = Ue4ssRuntimeInstallSchema.parse(
@@ -479,17 +647,40 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
 
   private runtimeReleaseProblems(
     runtime: Ue4ssRuntimeInstall,
-    currentSteamBuildId?: string | null
+    currentSteamBuildId?: string | null,
+    currentFingerprintSha256?: string | null
   ): ModProblem[] {
     if (runtime.source === "bundled") {
       const compatibility = this.options.bundledUe4ssCompatibility;
+      const localValidationProblem = runtime.validation
+        ? bundledRuntimeScopeProblem(
+            runtime,
+            currentSteamBuildId,
+            currentFingerprintSha256
+          )
+        : null;
       if (!this.isCurrentBundledRuntime(runtime)) {
         return [
           modProblem(
-            "error",
+            "warning",
             "UE4SS_BUNDLED_RUNTIME_STALE",
-            "The installed packaged UE4SS runtime is not the current validated bundled runtime.",
-            `Installed version '${runtime.version}' does not match expected packaged runtime '${this.currentBundledRuntimeVersion()}'. Reinstall the packaged runtime.`
+            "The installed packaged UE4SS runtime differs from the bundled default runtime.",
+            `Installed version '${runtime.version}' does not match bundled default '${this.currentBundledRuntimeVersion()}'. CMM will not block launch for this difference. Use the packaged runtime action only if you want CMM to replace its managed packaged copy.`
+          )
+        ];
+      }
+
+      if (runtime.validation && !localValidationProblem) {
+        if (runtime.validation.status === "VALIDATED") {
+          return [];
+        }
+
+        return [
+          modProblem(
+            "error",
+            "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+            "The packaged UE4SS runtime failed validation against this Clawed build.",
+            runtime.validation.details ?? runtime.validation.evidencePath
           )
         ];
       }
@@ -513,6 +704,10 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
         return [];
       }
 
+      if (localValidationProblem) {
+        return [localValidationProblem];
+      }
+
       if (compatibility?.status === "incompatible") {
         return [
           modProblem(
@@ -530,6 +725,40 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
       );
     }
 
+    if (runtime.source === "user" && runtime.validation) {
+      const scopeProblem = userRuntimeScopeProblem(
+        runtime.validation,
+        currentSteamBuildId,
+        currentFingerprintSha256
+      );
+      if (scopeProblem) {
+        return [scopeProblem];
+      }
+    }
+
+    if (runtime.releaseValidation === "VALIDATED") {
+      const validation = runtime.validation;
+      if (!validation || validation.status !== "VALIDATED") {
+        return unvalidatedRuntimeProblems(
+          "UE4SS was imported but has no retained validation evidence for this Clawed release build."
+        );
+      }
+
+      return [];
+    }
+
+    if (runtime.releaseValidation === "INCOMPATIBLE") {
+      const validation = runtime.validation;
+      return [
+        modProblem(
+          "error",
+          "UE4SS_USER_RUNTIME_INCOMPATIBLE",
+          "The user-imported UE4SS runtime failed validation against the Clawed release build.",
+          validation?.details ?? validation?.evidencePath ?? undefined
+        )
+      ];
+    }
+
     return unvalidatedRuntimeProblems(
       "UE4SS was imported but has not been validated against the Clawed release build."
     );
@@ -543,16 +772,72 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
 
   private runtimeWithBuildReleaseValidation(
     runtime: Ue4ssRuntimeInstall,
-    currentSteamBuildId?: string | null
+    currentSteamBuildId?: string | null,
+    currentFingerprintSha256?: string | null
   ): Ue4ssRuntimeInstall {
+    if (
+      runtime.source === "bundled" &&
+      !this.isCurrentBundledRuntime(runtime) &&
+      runtime.releaseValidation !== "UNVALIDATED"
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
     if (
       runtime.source === "bundled" &&
       currentSteamBuildId &&
       this.options.bundledUe4ssCompatibility?.status === "validated" &&
       this.options.bundledUe4ssCompatibility.validatedSteamBuildIds?.length &&
+      (!runtime.validation ||
+        bundledRuntimeScopeProblem(
+          runtime,
+          currentSteamBuildId,
+          currentFingerprintSha256
+        ) !== null) &&
       !this.options.bundledUe4ssCompatibility.validatedSteamBuildIds.includes(
         currentSteamBuildId
       )
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
+    if (
+      runtime.source === "user" &&
+      runtime.releaseValidation === "VALIDATED" &&
+      runtime.validation?.status !== "VALIDATED"
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
+    if (
+      runtime.source === "user" &&
+      runtime.releaseValidation === "INCOMPATIBLE" &&
+      runtime.validation?.status !== "INCOMPATIBLE"
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
+    if (
+      runtime.source === "user" &&
+      runtime.validation &&
+      userRuntimeScopeProblem(
+        runtime.validation,
+        currentSteamBuildId,
+        currentFingerprintSha256
+      ) &&
+      runtime.releaseValidation !== "UNVALIDATED"
     ) {
       return Ue4ssRuntimeInstallSchema.parse({
         ...runtime,
@@ -576,6 +861,10 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
   private async normalizeBundledRuntimeReleaseValidation(
     runtime: Ue4ssRuntimeInstall
   ): Promise<Ue4ssRuntimeInstall> {
+    if (runtime.validation) {
+      return runtime;
+    }
+
     const releaseValidation = this.bundledRuntimeReleaseValidation();
     if (runtime.releaseValidation === releaseValidation) {
       return runtime;
@@ -902,4 +1191,124 @@ function unvalidatedRuntimeProblems(message: string): ModProblem[] {
       message
     )
   ];
+}
+
+function userRuntimeScopeProblem(
+  validation: NonNullable<Ue4ssRuntimeInstall["validation"]>,
+  currentSteamBuildId?: string | null,
+  currentFingerprintSha256?: string | null
+): ModProblem | null {
+  const validationFingerprint = validation.fingerprintSha256?.toLowerCase();
+  const currentFingerprint = currentFingerprintSha256?.toLowerCase();
+
+  if (
+    validation.steamBuildId &&
+    currentSteamBuildId &&
+    validation.steamBuildId !== currentSteamBuildId
+  ) {
+    return modProblem(
+      "warning",
+      "UE4SS_USER_RUNTIME_BUILD_UNVALIDATED",
+      "The user-imported UE4SS runtime was tested against a different Clawed build.",
+      `Steam build ${currentSteamBuildId} does not match retained user-runtime validation build ${validation.steamBuildId}.`
+    );
+  }
+
+  if (
+    validationFingerprint &&
+    currentFingerprint &&
+    validationFingerprint !== currentFingerprint
+  ) {
+    return modProblem(
+      "warning",
+      "UE4SS_USER_RUNTIME_FINGERPRINT_UNVALIDATED",
+      "The user-imported UE4SS runtime was tested against a different Clawed fingerprint.",
+      `Current fingerprint ${currentFingerprintSha256} does not match retained user-runtime validation fingerprint ${validation.fingerprintSha256}.`
+    );
+  }
+
+  if (
+    (validation.steamBuildId &&
+      currentSteamBuildId &&
+      validation.steamBuildId === currentSteamBuildId) ||
+    (validationFingerprint &&
+      currentFingerprint &&
+      validationFingerprint === currentFingerprint)
+  ) {
+    return null;
+  }
+
+  return modProblem(
+    "warning",
+    "UE4SS_USER_RUNTIME_SCOPE_UNVALIDATED",
+    "The user-imported UE4SS runtime has validation evidence, but CMM cannot match it to the current Clawed build or fingerprint.",
+    `Retained validation build: ${validation.steamBuildId ?? "none"}; retained validation fingerprint: ${validation.fingerprintSha256 ?? "none"}.`
+  );
+}
+
+function bundledRuntimeScopeProblem(
+  runtime: Ue4ssRuntimeInstall,
+  currentSteamBuildId?: string | null,
+  currentFingerprintSha256?: string | null
+): ModProblem | null {
+  const validation = runtime.validation;
+  if (!validation) {
+    return null;
+  }
+
+  if (validation.sourceSha256 !== runtime.sourceSha256) {
+    return modProblem(
+      "warning",
+      "UE4SS_BUNDLED_RUNTIME_SOURCE_UNVALIDATED",
+      "The packaged UE4SS runtime validation evidence was recorded for a different runtime copy.",
+      "Revalidate the packaged runtime before treating it as current."
+    );
+  }
+
+  const validationFingerprint = validation.fingerprintSha256?.toLowerCase();
+  const currentFingerprint = currentFingerprintSha256?.toLowerCase();
+
+  if (
+    validation.steamBuildId &&
+    currentSteamBuildId &&
+    validation.steamBuildId !== currentSteamBuildId
+  ) {
+    return modProblem(
+      "warning",
+      "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED",
+      "The packaged UE4SS runtime was tested against a different Clawed build.",
+      `Steam build ${currentSteamBuildId} does not match retained packaged-runtime validation build ${validation.steamBuildId}.`
+    );
+  }
+
+  if (
+    validationFingerprint &&
+    currentFingerprint &&
+    validationFingerprint !== currentFingerprint
+  ) {
+    return modProblem(
+      "warning",
+      "UE4SS_BUNDLED_RUNTIME_FINGERPRINT_UNVALIDATED",
+      "The packaged UE4SS runtime was tested against a different Clawed fingerprint.",
+      `Current fingerprint ${currentFingerprintSha256} does not match retained packaged-runtime validation fingerprint ${validation.fingerprintSha256}.`
+    );
+  }
+
+  if (
+    (validation.steamBuildId &&
+      currentSteamBuildId &&
+      validation.steamBuildId === currentSteamBuildId) ||
+    (validationFingerprint &&
+      currentFingerprint &&
+      validationFingerprint === currentFingerprint)
+  ) {
+    return null;
+  }
+
+  return modProblem(
+    "warning",
+    "UE4SS_BUNDLED_RUNTIME_SCOPE_UNVALIDATED",
+    "The packaged UE4SS runtime has validation evidence, but CMM cannot match it to the current Clawed build or fingerprint.",
+    `Retained validation build: ${validation.steamBuildId ?? "none"}; retained validation fingerprint: ${validation.fingerprintSha256 ?? "none"}.`
+  );
 }

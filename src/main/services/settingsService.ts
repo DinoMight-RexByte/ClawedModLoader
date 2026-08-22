@@ -12,7 +12,8 @@ import type {
 
 const defaultSettings: AppSettings = {
   manualGameDirectory: null,
-  autoUpdatePackagedRuntime: true
+  autoUpdatePackagedRuntime: true,
+  autoValidatePackagedRuntime: false
 };
 
 export class JsonSettingsService implements SettingsServiceContract {
@@ -51,6 +52,18 @@ export class JsonSettingsService implements SettingsServiceContract {
     const nextSettings = AppSettingsSchema.parse({
       ...(await this.getSettings()),
       autoUpdatePackagedRuntime: enabled
+    });
+
+    await this.writeSettings(nextSettings);
+    return nextSettings;
+  }
+
+  async setAutoValidatePackagedRuntime(
+    enabled: boolean
+  ): Promise<AppSettings> {
+    const nextSettings = AppSettingsSchema.parse({
+      ...(await this.getSettings()),
+      autoValidatePackagedRuntime: enabled
     });
 
     await this.writeSettings(nextSettings);

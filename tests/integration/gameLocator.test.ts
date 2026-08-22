@@ -20,6 +20,7 @@ class FakeSettingsService implements SettingsServiceContract {
     this.settings = {
       manualGameDirectory: null,
       autoUpdatePackagedRuntime: true,
+      autoValidatePackagedRuntime: false,
       ...settings
     };
   }
@@ -46,6 +47,16 @@ class FakeSettingsService implements SettingsServiceContract {
     this.settings = {
       ...this.settings,
       autoUpdatePackagedRuntime: enabled
+    };
+    return this.settings;
+  }
+
+  async setAutoValidatePackagedRuntime(
+    enabled: boolean
+  ): Promise<AppSettings> {
+    this.settings = {
+      ...this.settings,
+      autoValidatePackagedRuntime: enabled
     };
     return this.settings;
   }

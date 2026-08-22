@@ -35,10 +35,12 @@ import {
   LocalRuntimeManager,
   type LocalRuntimeManagerOptions
 } from "../../src/main/services/runtimeManager";
+import { PACKAGED_RUNTIME_VALIDATION_MOD_ID } from "../../src/main/services/runtimeValidationProbe";
 import {
   createStorageLayout,
   ensureStorageLayout
 } from "../../src/main/services/storageLayout";
+import { UNREAL_MAPPINGS_DUMP_MOD_ID } from "../../src/main/services/unrealMappingsDumpProbe";
 import {
   CLAWED_STEAM_APP_ID,
   type AppSettings,
@@ -67,7 +69,8 @@ class FakeSettingsService implements SettingsServiceContract {
   constructor(
     private settings: AppSettings = {
       manualGameDirectory: null,
-      autoUpdatePackagedRuntime: true
+      autoUpdatePackagedRuntime: true,
+      autoValidatePackagedRuntime: false
     }
   ) {}
 
@@ -91,6 +94,16 @@ class FakeSettingsService implements SettingsServiceContract {
     this.settings = {
       ...this.settings,
       autoUpdatePackagedRuntime: enabled
+    };
+    return this.settings;
+  }
+
+  async setAutoValidatePackagedRuntime(
+    enabled: boolean
+  ): Promise<AppSettings> {
+    this.settings = {
+      ...this.settings,
+      autoValidatePackagedRuntime: enabled
     };
     return this.settings;
   }
@@ -124,6 +137,7 @@ async function makeServices(
   const settingsService = new FakeSettingsService({
     manualGameDirectory: null,
     autoUpdatePackagedRuntime: true,
+    autoValidatePackagedRuntime: false,
     ...settings
   });
   const resolvedRuntimeOptions = runtimeOptions
@@ -559,6 +573,216 @@ describe("deployment and runtime management", () => {
     await expect(
       readFile(path.join(runtimeRoot, "Mods", "cmm-profile.json"), "utf8")
     ).resolves.toContain('"targetSteamBuildId": "24742251"');
+  });
+
+  it("allows packaged runtime deployment for an unvalidated build with warnings", async () => {
+    const {
+      root,
+      deploymentService,
+      modLibraryService,
+      profileService,
+      runtimeManager
+    } = await makeServices(undefined, async (serviceRoot) => {
+      const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+      await createBundledNestedRuntimeRoot(bundleRoot);
+      return {
+        bundledUe4ssRuntimePath: bundleRoot,
+        bundledUe4ssVersion: "prompt-packaged-runtime",
+        bundledUe4ssCompatibility: {
+          status: "validated",
+          validatedSteamBuildIds: ["24742251"]
+        }
+      };
+    });
+    const discovery = await createFakeSteamGame(root);
+    await writeAppManifest(discovery.appManifestPath!, "99999999", "101");
+    await runtimeManager.installBundledUe4ssRuntime();
+    await importAndEnable(root, modLibraryService, profileService, {
+      id: "core",
+      name: "Core",
+      version: "1.0.0"
+    });
+
+    const result = await deploymentService.prepareModdedDeployment(discovery);
+    const runtimeRoot = path.join(discovery.gameInstallPath!, "ue4ss");
+
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("runtimeUnvalidated");
+    expect(result.manifest).not.toBeNull();
+    expect(result.problems.some((problem) =>
+      problem.code === "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED"
+    )).toBe(true);
+    expect(await exists(path.join(runtimeRoot, "Mods", "core"))).toBe(true);
+    expect(await exists(path.join(runtimeRoot, "Mods", "cmm-profile.json"))).toBe(
+      true
+    );
+  });
+
+  it("stages a temporary packaged runtime validation deployment for a new Steam build", async () => {
+    const { root, deploymentService, runtimeManager } = await makeServices(
+      undefined,
+      async (serviceRoot) => {
+        const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+        await createBundledNestedRuntimeRoot(bundleRoot);
+        return {
+          bundledUe4ssRuntimePath: bundleRoot,
+          bundledUe4ssVersion: "auto-validation-runtime",
+          bundledUe4ssCompatibility: {
+            status: "validated",
+            validatedSteamBuildIds: ["24742251"]
+          }
+        };
+      }
+    );
+    const discovery = await createFakeSteamGame(root);
+    await writeAppManifest(discovery.appManifestPath!, "99999999", "101");
+    await runtimeManager.installBundledUe4ssRuntime();
+
+    const result =
+      await deploymentService.prepareRuntimeValidationDeployment(discovery);
+    const markerPath = path.join(
+      discovery.gameInstallPath!,
+      "ue4ss",
+      "Mods",
+      PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+      "Scripts",
+      "main.lua"
+    );
+
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("runtimeUnvalidated");
+    expect(result.manifest?.profileId).toBe("cmm-runtime-validation");
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      type: "ue4ss",
+      releaseValidation: "UNVALIDATED",
+      targetSteamBuildId: "99999999",
+      logicalOrder: [PACKAGED_RUNTIME_VALIDATION_MOD_ID]
+    });
+    await expect(readFile(markerPath, "utf8")).resolves.toContain(
+      "packaged UE4SS runtime validation"
+    );
+
+    const vanilla = await deploymentService.prepareVanillaDeployment(discovery);
+    expect(vanilla.status).toBe("ok");
+    expect(await exists(markerPath)).toBe(false);
+  });
+
+  it("stages a temporary Unreal mappings dump deployment without retained runtime validation", async () => {
+    const { root, deploymentService, runtimeManager } = await makeServices(
+      undefined,
+      async (serviceRoot) => {
+        const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+        await createBundledNestedRuntimeRoot(bundleRoot);
+        return {
+          bundledUe4ssRuntimePath: bundleRoot,
+          bundledUe4ssVersion: "mappings-runtime",
+          bundledUe4ssCompatibility: {
+            status: "validated",
+            validatedSteamBuildIds: ["24742251"]
+          }
+        };
+      }
+    );
+    const discovery = await createFakeSteamGame(root);
+    await writeAppManifest(discovery.appManifestPath!, "99999999", "101");
+    await runtimeManager.installBundledUe4ssRuntime();
+
+    const result =
+      await deploymentService.prepareUnrealMappingsDumpDeployment(discovery);
+    const markerPath = path.join(
+      discovery.gameInstallPath!,
+      "ue4ss",
+      "Mods",
+      UNREAL_MAPPINGS_DUMP_MOD_ID,
+      "Scripts",
+      "main.lua"
+    );
+
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("runtimeUnvalidated");
+    expect(result.manifest?.profileId).toBe("cmm-unreal-mappings-dump");
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      type: "ue4ss",
+      releaseValidation: "UNVALIDATED",
+      targetSteamBuildId: "99999999",
+      logicalOrder: [UNREAL_MAPPINGS_DUMP_MOD_ID]
+    });
+    await expect(readFile(markerPath, "utf8")).resolves.toContain("DumpUSMAP");
+
+    const vanilla = await deploymentService.prepareVanillaDeployment(discovery);
+    expect(vanilla.status).toBe("ok");
+    expect(await exists(markerPath)).toBe(false);
+  });
+
+  it("treats a user runtime validated for the current build as modded ready", async () => {
+    const {
+      root,
+      deploymentService,
+      modLibraryService,
+      profileService,
+      runtimeManager
+    } = await makeServices();
+    const discovery = await createFakeSteamGame(root);
+    await importRuntime(root, runtimeManager);
+    const fingerprint = await new ClawedGameAdapter().getFingerprint(discovery);
+    const recorded = await runtimeManager.recordUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "24742251",
+      fingerprintSha256: fingerprint.fingerprintSha256,
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation"
+    });
+    await importAndEnable(root, modLibraryService, profileService, {
+      id: "core",
+      name: "Core",
+      version: "1.0.0"
+    });
+
+    const result = await deploymentService.prepareModdedDeployment(discovery);
+
+    expect(recorded.runtime?.source).toBe("user");
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("moddedReady");
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      type: "ue4ss",
+      releaseValidation: "VALIDATED",
+      effectiveOrderKnown: true
+    });
+  });
+
+  it("blocks an incompatible user runtime before deployment writes", async () => {
+    const {
+      root,
+      deploymentService,
+      modLibraryService,
+      profileService,
+      runtimeManager
+    } = await makeServices();
+    const discovery = await createFakeSteamGame(root);
+    await importRuntime(root, runtimeManager);
+    const fingerprint = await new ClawedGameAdapter().getFingerprint(discovery);
+    await runtimeManager.recordUe4ssRuntimeValidation({
+      status: "INCOMPATIBLE",
+      steamBuildId: "24742251",
+      fingerprintSha256: fingerprint.fingerprintSha256,
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation",
+      details: "UE4SS log did not contain the marker."
+    });
+    await importAndEnable(root, modLibraryService, profileService, {
+      id: "core",
+      name: "Core",
+      version: "1.0.0"
+    });
+
+    const result = await deploymentService.prepareModdedDeployment(discovery);
+
+    expect(result.status).toBe("blocked");
+    expect(result.state).toBe("runtimeIncompatible");
+    expect(result.problems[0].code).toBe("UE4SS_USER_RUNTIME_INCOMPATIBLE");
+    expect(await exists(path.join(discovery.gameInstallPath!, "xinput1_3.dll"))).toBe(
+      false
+    );
   });
 
   it("leaves packaged runtime updates manual when auto update is disabled", async () => {

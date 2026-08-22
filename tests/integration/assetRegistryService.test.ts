@@ -69,6 +69,14 @@ class FakeDeploymentService implements DeploymentServiceContract {
     throw new Error("not used");
   }
 
+  async prepareRuntimeValidationDeployment(): Promise<DeploymentOperationResult> {
+    throw new Error("not used");
+  }
+
+  async prepareUnrealMappingsDumpDeployment(): Promise<DeploymentOperationResult> {
+    throw new Error("not used");
+  }
+
   async prepareVanillaDeployment(): Promise<DeploymentOperationResult> {
     throw new Error("not used");
   }
@@ -93,6 +101,9 @@ interface AssetRegistryFixture {
 
 interface AssetRegistryFixtureOptions {
   includeMeshRows?: boolean;
+  includeAmbiguousModelVisualRow?: boolean;
+  includeBlendSpaceRow?: boolean;
+  includeUnhintedStaticMeshRow?: boolean;
   createPreviewCache?: boolean;
   stalePreviewCache?: boolean;
   decoder?: BaseGameMeshDecoder;
@@ -309,6 +320,7 @@ describe("asset registry service", () => {
     });
 
     expect(roots.nodes.map((node) => node.label)).toContain("Clawed Base Game");
+    expect(packageRoot?.childCount).toBe(3);
     expect(baseGame.nodes[0]).toMatchObject({
       kind: "folder",
       label: "Game",
@@ -317,7 +329,8 @@ describe("asset registry service", () => {
     expect(packageChildren.nodes[0]).toMatchObject({
       kind: "folder",
       label: "Alpha Texture 1.0.0",
-      source: "installedPackage"
+      source: "installedPackage",
+      childCount: 3
     });
     expect(search.nodes.some((node) => node.kind === "asset")).toBe(true);
     expect(search.nodes.map((node) => node.assetId)).toContain(
@@ -546,6 +559,39 @@ describe("asset registry service", () => {
     expect(basePreview.metadata.exportState).toBe("exportable");
   });
 
+  it("loads package model payload files directly from the asset tree", async () => {
+    const fixture = await createAssetRegistryFixture();
+    await installCreatorPackage(fixture.tempRoot, fixture.modLibraryService, {
+      id: "mesh-payload",
+      name: "Mesh Payload",
+      pakFileName: "MeshPayload_P.pak",
+      payloadSha256: "c".repeat(64),
+      modelPreview: {
+        payloadPath: "payload/previews/utah-preview.obj",
+        content: testObjModel(),
+        source: "userOwned"
+      }
+    });
+
+    const search = await fixture.service.searchAssets({
+      query: "utah-preview.obj",
+      source: "packagePayload"
+    });
+    const payload = search.entries.find(
+      (entry) => entry.assetClass === "ModelPreview"
+    );
+    expect(payload).toBeDefined();
+
+    const preview = await fixture.service.getModelPreview({
+      assetId: payload?.id ?? ""
+    });
+
+    expect(preview.status).toBe("available");
+    expect(preview.model?.source).toBe("packagePayload");
+    expect(preview.model?.format).toBe("obj");
+    expect(preview.metadata.previewSource).toBe("Package model payload");
+  });
+
   it("reports empty, unsupported, and error model preview states", async () => {
     const fixture = await createAssetRegistryFixture();
     await installCreatorPackage(fixture.tempRoot, fixture.modLibraryService, {
@@ -618,12 +664,99 @@ describe("asset registry service", () => {
 
     expect(preview.status).toBe("available");
     expect(preview.model?.source).toBe("decodedBaseGame");
-    expect(preview.model?.format).toBe("obj");
+    expect(preview.model?.format).toBe("glb");
     expect(preview.metadata.meshType).toBe("staticMesh");
     expect(preview.metadata.materialSlots[0]?.name).toBe("Fallback Material");
     expect(
       preview.problems.some((problem) => problem.code.startsWith("AUTHORIZED_"))
     ).toBe(false);
+  });
+
+  it("does not mark ambiguous model_visuals cooked assets as viewport meshes", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeAmbiguousModelVisualRow: true
+    });
+    const search = await fixture.service.searchAssets({
+      query: "Preview_Tag_Only",
+      source: "baseGameMap"
+    });
+    const entry = search.entries[0];
+
+    expect(entry?.assetClass).toBe("CookedUnrealAsset");
+    expect(entry?.viewportState).toBe("none");
+  });
+
+  it("does not mark animation blend spaces under mesh folders as viewport meshes", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeBlendSpaceRow: true
+    });
+    const search = await fixture.service.searchAssets({
+      query: "Ankylo_Walk_BS",
+      source: "baseGameMap"
+    });
+    const entry = search.entries[0];
+
+    expect(entry?.assetClass).toBe("BlendSpace");
+    expect(entry?.viewportState).toBe("none");
+  });
+
+  it("marks model_visuals cooked rows as viewport candidates without tree probing", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeAmbiguousModelVisualRow: true,
+      createPreviewCache: false,
+      decoder: fakeMeshDecoder()
+    });
+    const tree = await fixture.service.getAssetTree({
+      query: "Preview_Tag_Only",
+      source: "baseGameMap"
+    });
+    const node = tree.nodes.find((candidate) => candidate.kind === "asset");
+    const search = await fixture.service.searchAssets({
+      query: "Preview_Tag_Only",
+      source: "baseGameMap"
+    });
+    const entry = search.entries[0];
+    expect(entry).toBeDefined();
+
+    const preview = await fixture.service.getModelPreview({
+      assetId: entry?.id ?? ""
+    });
+
+    expect(entry?.assetClass).toBe("CookedUnrealAsset");
+    expect(node?.assetClass).toBe("CookedUnrealAsset");
+    expect(node?.viewportState).toBe("viewable");
+    expect(preview.status).toBe("available");
+    expect(preview.asset?.assetClass).toBe("StaticMesh");
+    expect(preview.metadata.meshType).toBe("staticMesh");
+  });
+
+  it("marks SM-prefixed static meshes as viewport-renderable without tree probing", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeUnhintedStaticMeshRow: true,
+      createPreviewCache: false,
+      decoder: fakeMeshDecoder()
+    });
+    const tree = await fixture.service.getAssetTree({
+      query: "SM_Rock01",
+      source: "baseGameMap"
+    });
+    const node = tree.nodes.find((candidate) => candidate.kind === "asset");
+    const search = await fixture.service.searchAssets({
+      query: "SM_Rock01",
+      source: "baseGameMap"
+    });
+    const entry = search.entries[0];
+    expect(entry).toBeDefined();
+
+    const preview = await fixture.service.getModelPreview({
+      assetId: entry?.id ?? ""
+    });
+
+    expect(entry?.assetClass).toBe("StaticMesh");
+    expect(node?.assetClass).toBe("StaticMesh");
+    expect(node?.viewportState).toBe("viewable");
+    expect(preview.status).toBe("available");
+    expect(preview.metadata.meshType).toBe("staticMesh");
   });
 
   it("decodes base-game SkeletalMesh previews and relationship metadata without a preview-cache entry", async () => {
@@ -649,6 +782,31 @@ describe("asset registry service", () => {
       "skeleton",
       "physicsAsset"
     ]);
+  });
+
+  it("decodes base-game Skeleton previews without a preview-cache entry", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeMeshRows: true,
+      createPreviewCache: false,
+      decoder: fakeMeshDecoder()
+    });
+    const search = await fixture.service.searchAssets({
+      query: "SKEL_Target_Skeleton",
+      source: "baseGameMap"
+    });
+    const skeleton = search.entries.find(
+      (candidate) => candidate.assetClass === "Skeleton"
+    );
+    expect(skeleton).toBeDefined();
+
+    const preview = await fixture.service.getModelPreview({
+      assetId: skeleton?.id ?? ""
+    });
+
+    expect(preview.status).toBe("available");
+    expect(preview.model?.source).toBe("decodedBaseGame");
+    expect(preview.model?.format).toBe("gltf");
+    expect(preview.metadata.meshType).toBe("skeleton");
   });
 
   it("uses cached normalized base-game previews when valid and falls back when stale", async () => {
@@ -684,18 +842,30 @@ describe("asset registry service", () => {
     );
   });
 
-  it("exports base-game mesh formats without a preview-cache entry", async () => {
+  it("exports supported base-game model formats without a preview-cache entry", async () => {
     const fixture = await createAssetRegistryFixture({
       includeMeshRows: true,
       createPreviewCache: false,
       decoder: fakeMeshDecoder()
     });
     const mesh = await getBaseMeshEntry(fixture.service, "SM_Target");
+    const search = await fixture.service.searchAssets({
+      query: "SKEL_Target_Skeleton",
+      source: "baseGameMap"
+    });
+    const skeleton = search.entries.find(
+      (candidate) => candidate.assetClass === "Skeleton"
+    );
+    expect(skeleton).toBeDefined();
 
-    for (const format of ["obj", "gltf", "glb"] as const) {
+    for (const [assetId, format] of [
+      [mesh.id, "glb"],
+      [mesh.id, "obj"],
+      [skeleton?.id ?? "", "gltf"]
+    ] as const) {
       const destinationPath = path.join(fixture.tempRoot, "exports", `mesh.${format}`);
       const result = await fixture.service.exportMesh({
-        assetId: mesh.id,
+        assetId,
         format,
         destinationPath
       });
@@ -706,6 +876,68 @@ describe("asset registry service", () => {
         result.bytesWritten ?? 0
       );
     }
+
+    const unsupported = await fixture.service.exportMesh({
+      assetId: mesh.id,
+      format: "gltf",
+      destinationPath: path.join(fixture.tempRoot, "exports", "mesh.gltf")
+    });
+    expect(unsupported.status).toBe("unsupported");
+    expect(unsupported.problems[0]?.code).toBe("BASE_GAME_MESH_FORMAT_UNSUPPORTED");
+  });
+
+  it("keeps base-game mesh probe cache separate by preview and export purpose", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeMeshRows: true,
+      createPreviewCache: false,
+      decoder: purposeSensitiveProbeDecoder()
+    });
+    const mesh = await getBaseMeshEntry(fixture.service, "SM_Target");
+    const preview = await fixture.service.getModelPreview({ assetId: mesh.id });
+    const plan = await fixture.service.getExportPlan({
+      assetIds: [mesh.id],
+      output: "glb"
+    });
+
+    expect(preview.status).toBe("available");
+    expect(plan.status).toBe("blocked");
+    expect(plan.items[0]?.reason).toBe("Unsupported asset class.");
+  });
+
+  it("exports visible viewport models into one .clawedmod package", async () => {
+    const fixture = await createAssetRegistryFixture({
+      includeMeshRows: true,
+      createPreviewCache: false,
+      decoder: fakeMeshDecoder()
+    });
+    const mesh = await getBaseMeshEntry(fixture.service, "SM_Target");
+    const search = await fixture.service.searchAssets({
+      query: "SKEL_Target_Skeleton",
+      source: "baseGameMap"
+    });
+    const skeleton = search.entries.find(
+      (candidate) => candidate.assetClass === "Skeleton"
+    );
+    expect(skeleton).toBeDefined();
+
+    const destinationPath = path.join(
+      fixture.tempRoot,
+      "exports",
+      "visible-models.clawedmod"
+    );
+    const result = await fixture.service.exportMeshPackage({
+      assetIds: [mesh.id, skeleton?.id ?? ""],
+      destinationPath
+    });
+    const parsed = await new ClawedModPackageService().parsePackage(
+      destinationPath
+    );
+
+    expect(result.status).toBe("exported");
+    expect(result.itemCount).toBe(2);
+    expect(result.exportedCount).toBe(2);
+    expect(parsed.manifest.creatorAssets?.previewAssets).toHaveLength(2);
+    expect(parsed.zip.file(result.items[0]?.payloadPath ?? "")).not.toBeNull();
   });
 
   it("returns structured decoder errors for unsupported and corrupt base-game meshes", async () => {
@@ -917,6 +1149,24 @@ function fakeMeshDecoder(
 ): BaseGameMeshDecoder {
   return {
     isAvailable: () => true,
+    supportsFormat: (format, asset) =>
+      asset.assetClass === "Skeleton"
+        ? format === "gltf"
+        : format === "glb" || format === "obj",
+    probe: async ({ asset }) => {
+      const assetClass = probeAssetClass(asset);
+      return assetClass
+        ? {
+            status: "ready",
+            assetClass,
+            metadata: { meshType: meshTypeForAssetClass(assetClass) },
+            problems: []
+          }
+        : {
+            status: "unsupported",
+            problems: []
+          };
+    },
     decode: async ({ asset, detail, format }) => {
       if (status !== "ready") {
         return { status, problems: [] };
@@ -935,7 +1185,11 @@ function fakeMeshDecoder(
         fileName: `${asset.label.replace(/[^\w.-]+/g, "-")}.${format}`,
         metadata: {
           meshType:
-            asset.assetClass === "SkeletalMesh" ? "skeletalMesh" : "staticMesh",
+            asset.assetClass === "Skeleton"
+              ? "skeleton"
+              : asset.assetClass === "SkeletalMesh"
+                ? "skeletalMesh"
+                : "staticMesh",
           skeleton,
           physicsAsset,
           materialSlots: [{ name: "Fallback Material", materialPath: null }],
@@ -965,6 +1219,68 @@ function fakeMeshDecoder(
   };
 }
 
+function purposeSensitiveProbeDecoder(): BaseGameMeshDecoder {
+  const decoder = fakeMeshDecoder();
+  return {
+    ...decoder,
+    probe: async ({ asset, purpose }) => {
+      if (purpose === "export") {
+        return {
+          status: "unsupported",
+          problems: []
+        };
+      }
+      const assetClass = probeAssetClass(asset);
+      return assetClass
+        ? {
+            status: "ready",
+            assetClass,
+            metadata: { meshType: meshTypeForAssetClass(assetClass) },
+            problems: []
+          }
+        : {
+            status: "unsupported",
+            problems: []
+          };
+    }
+  };
+}
+
+function probeAssetClass(asset: CreatorAssetIndexEntry): string | null {
+  const value = [
+    asset.assetClass,
+    asset.objectPath,
+    asset.packagePath,
+    asset.relativePath,
+    asset.label
+  ]
+    .filter(Boolean)
+    .join("/")
+    .toLowerCase();
+  if (value.includes("preview_tag_only")) {
+    return "StaticMesh";
+  }
+  if (value.includes("rock01")) {
+    return "StaticMesh";
+  }
+  if (asset.assetClass === "StaticMesh" || asset.assetClass === "SkeletalMesh") {
+    return asset.assetClass;
+  }
+  if (asset.assetClass === "Skeleton") {
+    return "Skeleton";
+  }
+  return null;
+}
+
+function meshTypeForAssetClass(
+  assetClass: string
+): "staticMesh" | "skeletalMesh" | "skeleton" {
+  if (assetClass === "Skeleton") {
+    return "skeleton";
+  }
+  return assetClass === "SkeletalMesh" ? "skeletalMesh" : "staticMesh";
+}
+
 function meshDataForFormat(format: "obj" | "gltf" | "glb"): Buffer {
   if (format === "gltf") {
     return Buffer.from(
@@ -988,6 +1304,21 @@ async function createMapArtifacts(
 ): Promise<void> {
   const rows = [
     "container,Clawed/Content/UtahRaptor/Textures/T_Target.uasset,/Game/UtahRaptor/Textures/T_Target.T_Target,Clawed-Windows,.uasset,120,0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,texture_material_visuals,Texture replacement target",
+    ...(options.includeAmbiguousModelVisualRow
+      ? [
+          "container,Clawed/Content/Shared/Preview_Tag_Only.uasset,/Game/Shared/Preview_Tag_Only.Preview_Tag_Only,Clawed-Windows,.uasset,120,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,cooked_asset;model_visuals,Ambiguous visual metadata"
+        ]
+      : []),
+    ...(options.includeBlendSpaceRow
+      ? [
+          "container,Clawed/Content/Ankylosaurus/Meshes/Ankylo_Walk_BS.uasset,/Game/Ankylosaurus/Meshes/Ankylo_Walk_BS.Ankylo_Walk_BS,Clawed-Windows,.uasset,2425,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb,cooked_asset;model_visuals;chunk_exportbundledata,Ankylosaurus blend space"
+        ]
+      : []),
+    ...(options.includeUnhintedStaticMeshRow
+      ? [
+          "container,Clawed/Content/Environment/Rocks/SM_Rock01.uasset,/Game/Environment/Rocks/SM_Rock01.SM_Rock01,Clawed-Windows,.uasset,2048,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,cooked_asset;chunk_exportbundledata,Unhinted static mesh"
+        ]
+      : []),
     ...(options.includeMeshRows
       ? [
           "container,Clawed/Content/UtahRaptor/Meshes/SM_Target.uasset,/Game/UtahRaptor/Meshes/SM_Target.SM_Target,Clawed-Windows,.uasset,2048,1111111111111111111111111111111111111111111111111111111111111111,cooked_asset;model_visuals,Static mesh target",

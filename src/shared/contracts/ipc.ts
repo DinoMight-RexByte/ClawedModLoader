@@ -22,6 +22,9 @@ import {
   CreatorExportPlanResultSchema,
   CreatorMeshExportDialogRequestSchema,
   CreatorMeshExportResultSchema,
+  CreatorMeshPackageExportDialogRequestSchema,
+  CreatorMeshPackageExportResultSchema,
+  CreatorMappingsDumpResultSchema,
   CreatorModelPreviewRequestSchema,
   CreatorModelPreviewResultSchema,
   CreatorPreviewLookupRequestSchema,
@@ -71,9 +74,11 @@ import {
   RendererErrorReportRequestSchema,
   RendererErrorReportResultSchema,
   RuntimeSnapshotSchema,
+  SetAutoValidatePackagedRuntimeRequestSchema,
   SetAutoUpdatePackagedRuntimeRequestSchema,
   SetModOrderPositionRequestSchema,
-  SetModEnabledRequestSchema
+  SetModEnabledRequestSchema,
+  ValidatePackagedRuntimeResultSchema
 } from "./app";
 import type {
   AppSettings,
@@ -97,6 +102,10 @@ import type {
   CreatorExportPlanResult,
   CreatorMeshExportDialogRequest,
   CreatorMeshExportResult,
+  CreatorMeshPackageExportDialogRequest,
+  CreatorMeshPackageExportResult,
+  CreatorMappingsDumpProgress,
+  CreatorMappingsDumpResult,
   CreatorModelPreviewRequest,
   CreatorModelPreviewResult,
   CreatorPreviewLookupRequest,
@@ -146,9 +155,11 @@ import type {
   RendererErrorReportRequest,
   RendererErrorReportResult,
   RuntimeSnapshot,
+  SetAutoValidatePackagedRuntimeRequest,
   SetAutoUpdatePackagedRuntimeRequest,
   SetModOrderPositionRequest,
-  SetModEnabledRequest
+  SetModEnabledRequest,
+  ValidatePackagedRuntimeResult
 } from "./app";
 
 export const IPC_CHANNELS = {
@@ -161,6 +172,8 @@ export const IPC_CHANNELS = {
   setManualGameDirectory: "cmm:settings:setManualGameDirectory",
   getAppSettings: "cmm:settings:getAppSettings",
   setAutoUpdatePackagedRuntime: "cmm:settings:setAutoUpdatePackagedRuntime",
+  setAutoValidatePackagedRuntime:
+    "cmm:settings:setAutoValidatePackagedRuntime",
   getLifecycleSnapshot: "cmm:process:getLifecycleSnapshot",
   listInstalledMods: "cmm:mods:listInstalled",
   importModPackage: "cmm:mods:importPackage",
@@ -198,6 +211,7 @@ export const IPC_CHANNELS = {
   prepareVanillaDeployment: "cmm:deployment:prepareVanilla",
   getRuntimeSnapshot: "cmm:runtime:getSnapshot",
   installBundledUe4ssRuntime: "cmm:runtime:installBundledUe4ss",
+  validatePackagedRuntime: "cmm:runtime:validatePackaged",
   importUe4ssRuntime: "cmm:runtime:importUe4ss",
   chooseAndImportUe4ssRuntime: "cmm:runtime:chooseAndImportUe4ss",
   getCreatorAssetRegistrySnapshot: "cmm:creatorAssets:getRegistrySnapshot",
@@ -209,6 +223,10 @@ export const IPC_CHANNELS = {
   getCreatorModelPreview: "cmm:creatorAssets:getModelPreview",
   getCreatorExportPlan: "cmm:creatorAssets:getExportPlan",
   chooseAndExportCreatorMesh: "cmm:creatorAssets:chooseAndExportMesh",
+  chooseAndExportCreatorMeshPackage:
+    "cmm:creatorAssets:chooseAndExportMeshPackage",
+  generateCreatorMappings: "cmm:creatorAssets:generateMappings",
+  creatorMappingsProgress: "cmm:creatorAssets:mappingsProgress",
   getCreatorAssetReport: "cmm:creatorAssets:getReport",
   restoreCmmChanges: "cmm:backup:restoreCmmChanges",
   getStorageLayout: "cmm:storage:getLayout",
@@ -272,6 +290,14 @@ export const ipcContracts = {
     responseSchema: AppSettingsSchema
   } satisfies IpcContract<
     SetAutoUpdatePackagedRuntimeRequest,
+    AppSettings
+  >,
+  setAutoValidatePackagedRuntime: {
+    channel: IPC_CHANNELS.setAutoValidatePackagedRuntime,
+    requestSchema: SetAutoValidatePackagedRuntimeRequestSchema,
+    responseSchema: AppSettingsSchema
+  } satisfies IpcContract<
+    SetAutoValidatePackagedRuntimeRequest,
     AppSettings
   >,
   getLifecycleSnapshot: {
@@ -454,6 +480,11 @@ export const ipcContracts = {
     requestSchema: EmptyRequestSchema,
     responseSchema: ImportUe4ssRuntimeResultSchema
   } satisfies IpcContract<EmptyRequest, ImportUe4ssRuntimeResult>,
+  validatePackagedRuntime: {
+    channel: IPC_CHANNELS.validatePackagedRuntime,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: ValidatePackagedRuntimeResultSchema
+  } satisfies IpcContract<EmptyRequest, ValidatePackagedRuntimeResult>,
   importUe4ssRuntime: {
     channel: IPC_CHANNELS.importUe4ssRuntime,
     requestSchema: ImportUe4ssRuntimeRequestSchema,
@@ -518,6 +549,19 @@ export const ipcContracts = {
     CreatorMeshExportDialogRequest,
     CreatorMeshExportResult
   >,
+  chooseAndExportCreatorMeshPackage: {
+    channel: IPC_CHANNELS.chooseAndExportCreatorMeshPackage,
+    requestSchema: CreatorMeshPackageExportDialogRequestSchema,
+    responseSchema: CreatorMeshPackageExportResultSchema
+  } satisfies IpcContract<
+    CreatorMeshPackageExportDialogRequest,
+    CreatorMeshPackageExportResult
+  >,
+  generateCreatorMappings: {
+    channel: IPC_CHANNELS.generateCreatorMappings,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: CreatorMappingsDumpResultSchema
+  } satisfies IpcContract<EmptyRequest, CreatorMappingsDumpResult>,
   getCreatorAssetReport: {
     channel: IPC_CHANNELS.getCreatorAssetReport,
     requestSchema: CreatorAssetReportRequestSchema,
@@ -579,6 +623,9 @@ export interface CmmApi {
   setAutoUpdatePackagedRuntime(
     request: SetAutoUpdatePackagedRuntimeRequest
   ): Promise<AppSettings>;
+  setAutoValidatePackagedRuntime(
+    request: SetAutoValidatePackagedRuntimeRequest
+  ): Promise<AppSettings>;
   getLifecycleSnapshot(): Promise<GameProcessSnapshot>;
   listInstalledMods(): Promise<ModLibrarySnapshot>;
   importModPackage(
@@ -633,6 +680,7 @@ export interface CmmApi {
   prepareVanillaDeployment(): Promise<DeploymentOperationResult>;
   getRuntimeSnapshot(): Promise<RuntimeSnapshot>;
   installBundledUe4ssRuntime(): Promise<ImportUe4ssRuntimeResult>;
+  validatePackagedRuntime(): Promise<ValidatePackagedRuntimeResult>;
   importUe4ssRuntime(
     request: ImportUe4ssRuntimeRequest
   ): Promise<ImportUe4ssRuntimeResult>;
@@ -662,6 +710,13 @@ export interface CmmApi {
   chooseAndExportCreatorMesh(
     request: CreatorMeshExportDialogRequest
   ): Promise<CreatorMeshExportResult>;
+  chooseAndExportCreatorMeshPackage(
+    request: CreatorMeshPackageExportDialogRequest
+  ): Promise<CreatorMeshPackageExportResult>;
+  generateCreatorMappings(): Promise<CreatorMappingsDumpResult>;
+  onCreatorMappingsProgress(
+    listener: (progress: CreatorMappingsDumpProgress) => void
+  ): () => void;
   getCreatorAssetReport(
     request: CreatorAssetReportRequest
   ): Promise<CreatorAssetReportResult>;

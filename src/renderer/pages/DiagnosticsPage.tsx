@@ -43,6 +43,25 @@ function Section({
   );
 }
 
+function runtimeStatusLabel(
+  status: DiagnosticsSummary["runtime"]["status"]
+): string {
+  switch (status) {
+    case "missing":
+      return "Missing";
+    case "invalid":
+      return "Invalid";
+    case "unvalidated":
+      return "Unvalidated";
+    case "validated":
+      return "Validated";
+    case "incompatible":
+      return "Incompatible";
+    case "configured":
+      return "Configured";
+  }
+}
+
 export function DiagnosticsPage(): ReactElement {
   const [summary, setSummary] = useState<DiagnosticsSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -225,7 +244,10 @@ export function DiagnosticsPage(): ReactElement {
                 label="Runtime installed"
                 value={summary.runtime.ue4ss ? "yes" : "no"}
               />
-              <Field label="Validation state" value={summary.runtime.status} />
+              <Field
+                label="Validation state"
+                value={runtimeStatusLabel(summary.runtime.status)}
+              />
               <Field
                 label="Runtime source"
                 value={
@@ -239,6 +261,18 @@ export function DiagnosticsPage(): ReactElement {
               <Field
                 label="Runtime version"
                 value={summary.runtime.ue4ss?.version ?? null}
+              />
+              <Field
+                label="Runtime validation"
+                value={summary.runtime.ue4ss?.releaseValidation ?? null}
+              />
+              <Field
+                label="Validated build"
+                value={summary.runtime.ue4ss?.validation?.steamBuildId ?? null}
+              />
+              <Field
+                label="Evidence"
+                value={summary.runtime.ue4ss?.validation?.evidencePath ?? null}
               />
             </dl>
           </Section>

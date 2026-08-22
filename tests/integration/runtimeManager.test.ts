@@ -201,7 +201,37 @@ describe("runtime manager", () => {
     expect(oldInstall.runtime?.version).toBe("old-packaged-runtime");
     expect(ensured?.status).toBe("imported");
     expect(ensured?.runtime?.version).toBe("current-packaged-runtime");
-    expect(snapshot.status).toBe("configured");
+    expect(snapshot.status).toBe("validated");
+  });
+
+  it("reports a stale packaged runtime as unvalidated instead of incompatible", async () => {
+    const { root, manager, bundleRoot } = await makeRuntimeManagerWithBundle({
+      bundledUe4ssVersion: "old-packaged-runtime",
+      bundledUe4ssCompatibility: {
+        status: "validated",
+        message: "Old packaged runtime was validated."
+      }
+    });
+    await manager.installBundledUe4ssRuntime();
+    const storageService = new FakeStorageService(
+      createStorageLayout(path.join(root, "user-data"))
+    );
+    const upgradedManager = new LocalRuntimeManager(storageService, undefined, {
+      bundledUe4ssRuntimePath: bundleRoot,
+      bundledUe4ssVersion: "current-packaged-runtime",
+      bundledUe4ssCompatibility: {
+        status: "unvalidated",
+        message: "Current packaged runtime has not been validated."
+      }
+    });
+
+    const snapshot = await upgradedManager.getRuntimeSnapshot();
+
+    expect(snapshot.status).toBe("unvalidated");
+    expect(snapshot.problems[0]).toMatchObject({
+      severity: "warning",
+      code: "UE4SS_BUNDLED_RUNTIME_STALE"
+    });
   });
 
   it("allows an explicit switch from a user-selected runtime to the packaged runtime", async () => {
@@ -245,7 +275,7 @@ describe("runtime manager", () => {
     );
   });
 
-  it("marks a release-validated packaged runtime as configured", async () => {
+  it("marks a release-validated packaged runtime as validated", async () => {
     const { manager } = await makeRuntimeManagerWithBundle({
       bundledUe4ssCompatibility: {
         status: "validated",
@@ -259,7 +289,7 @@ describe("runtime manager", () => {
     expect(result.status).toBe("imported");
     expect(result.runtime?.releaseValidation).toBe("VALIDATED");
     expect(result.problems).toEqual([]);
-    expect(snapshot.status).toBe("configured");
+    expect(snapshot.status).toBe("validated");
   });
 
   it("marks a packaged runtime unvalidated for a new Steam build", async () => {
@@ -276,10 +306,50 @@ describe("runtime manager", () => {
     const newBuildSnapshot = await manager.getRuntimeSnapshot("99999999");
 
     expect(result.status).toBe("imported");
-    expect(currentSnapshot.status).toBe("configured");
+    expect(currentSnapshot.status).toBe("validated");
     expect(newBuildSnapshot.status).toBe("unvalidated");
     expect(newBuildSnapshot.ue4ss?.releaseValidation).toBe("UNVALIDATED");
     expect(newBuildSnapshot.problems[0].code).toBe(
+      "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED"
+    );
+  });
+
+  it("records packaged runtime validation evidence for a new Steam build", async () => {
+    const { root, manager } = await makeRuntimeManagerWithBundle({
+      bundledUe4ssCompatibility: {
+        status: "validated",
+        message: "Packaged UE4SS loads a minimal Lua mod in Clawed.",
+        validatedSteamBuildIds: ["24742251"]
+      }
+    });
+
+    const installed = await manager.installBundledUe4ssRuntime();
+    const recorded = await manager.recordBundledUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "99999999",
+      fingerprintSha256: "f".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMPackagedRuntimeValidation",
+      details: "Minimal read-only Lua startup marker passed."
+    });
+    const matchingSnapshot = await manager.getRuntimeSnapshot("99999999");
+    const changedBuildSnapshot = await manager.getRuntimeSnapshot("88888888");
+
+    expect(installed.runtime?.source).toBe("bundled");
+    expect(recorded.status).toBe("recorded");
+    expect(recorded.runtime).toMatchObject({
+      source: "bundled",
+      releaseValidation: "VALIDATED",
+      validation: {
+        status: "VALIDATED",
+        steamBuildId: "99999999",
+        markerModId: "CMMPackagedRuntimeValidation",
+        sourceSha256: installed.runtime?.sourceSha256
+      }
+    });
+    expect(matchingSnapshot.status).toBe("validated");
+    expect(changedBuildSnapshot.status).toBe("unvalidated");
+    expect(changedBuildSnapshot.problems[0].code).toBe(
       "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED"
     );
   });
@@ -343,5 +413,161 @@ describe("runtime manager", () => {
         "utf8"
       )
     ).resolves.toBe("fake nested ue4ss dll");
+  });
+
+  it("records user runtime validation evidence for the tested Clawed build", async () => {
+    const { root, manager } = await makeRuntimeManager();
+    const runtimeZip = await createNestedRuntimeZip(
+      path.join(root, "UE4SS_user_validated.zip")
+    );
+    const imported = await manager.importUe4ssRuntime({
+      sourcePath: runtimeZip
+    });
+
+    const recorded = await manager.recordUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "24742251",
+      fingerprintSha256: "a".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation",
+      details: "Minimal read-only Lua startup marker passed."
+    });
+    const matchingSnapshot = await manager.getRuntimeSnapshot("24742251");
+    const changedBuildSnapshot = await manager.getRuntimeSnapshot("99999999");
+    const changedFingerprintSnapshot = await manager.getRuntimeSnapshot(
+      "24742251",
+      "0".repeat(64)
+    );
+
+    expect(imported.runtime?.releaseValidation).toBe("UNVALIDATED");
+    expect(recorded.status).toBe("recorded");
+    expect(recorded.runtime).toMatchObject({
+      source: "user",
+      releaseValidation: "VALIDATED",
+      validation: {
+        status: "VALIDATED",
+        steamBuildId: "24742251",
+        markerModId: "CMMUserRuntimeValidation",
+        sourceSha256: imported.runtime?.sourceSha256
+      }
+    });
+    expect(matchingSnapshot.status).toBe("validated");
+    expect(changedBuildSnapshot.status).toBe("unvalidated");
+    expect(changedBuildSnapshot.ue4ss?.releaseValidation).toBe("UNVALIDATED");
+    expect(changedBuildSnapshot.problems[0].code).toBe(
+      "UE4SS_USER_RUNTIME_BUILD_UNVALIDATED"
+    );
+    expect(changedFingerprintSnapshot.status).toBe("unvalidated");
+    expect(changedFingerprintSnapshot.problems[0].code).toBe(
+      "UE4SS_USER_RUNTIME_FINGERPRINT_UNVALIDATED"
+    );
+  });
+
+  it("records incompatible user runtime evidence without replacing the packaged default", async () => {
+    const { root, manager } = await makeRuntimeManager();
+    const runtimeZip = await createLegacyRuntimeZip(
+      path.join(root, "UE4SS_user_incompatible.zip")
+    );
+    await manager.importUe4ssRuntime({
+      sourcePath: runtimeZip
+    });
+
+    const recorded = await manager.recordUe4ssRuntimeValidation({
+      status: "INCOMPATIBLE",
+      steamBuildId: "24742251",
+      fingerprintSha256: "b".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation",
+      details: "Timed out before the read-only Lua marker."
+    });
+    const snapshot = await manager.getRuntimeSnapshot("24742251");
+    const changedBuildSnapshot = await manager.getRuntimeSnapshot("99999999");
+
+    expect(recorded.status).toBe("recorded");
+    expect(recorded.runtime).toMatchObject({
+      source: "user",
+      releaseValidation: "INCOMPATIBLE"
+    });
+    expect(snapshot.status).toBe("incompatible");
+    expect(snapshot.problems[0].code).toBe("UE4SS_USER_RUNTIME_INCOMPATIBLE");
+    expect(changedBuildSnapshot.status).toBe("unvalidated");
+    expect(changedBuildSnapshot.problems[0].code).toBe(
+      "UE4SS_USER_RUNTIME_BUILD_UNVALIDATED"
+    );
+  });
+
+  it("requires current scope to match fingerprint-only user runtime evidence", async () => {
+    const { root, manager } = await makeRuntimeManager();
+    const runtimeZip = await createNestedRuntimeZip(
+      path.join(root, "UE4SS_user_fingerprint_only.zip")
+    );
+    await manager.importUe4ssRuntime({
+      sourcePath: runtimeZip
+    });
+
+    await manager.recordUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: null,
+      fingerprintSha256: "e".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation"
+    });
+    const buildOnlySnapshot = await manager.getRuntimeSnapshot("24742251");
+    const matchingFingerprintSnapshot = await manager.getRuntimeSnapshot(
+      null,
+      "E".repeat(64)
+    );
+
+    expect(buildOnlySnapshot.status).toBe("unvalidated");
+    expect(buildOnlySnapshot.problems[0].code).toBe(
+      "UE4SS_USER_RUNTIME_SCOPE_UNVALIDATED"
+    );
+    expect(matchingFingerprintSnapshot.status).toBe("validated");
+  });
+
+  it("blocks user-runtime validation evidence for packaged runtimes", async () => {
+    const { root, manager } = await makeRuntimeManagerWithBundle();
+    await manager.installBundledUe4ssRuntime();
+
+    const recorded = await manager.recordUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "24742251",
+      fingerprintSha256: "c".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation"
+    });
+    const snapshot = await manager.getRuntimeSnapshot("24742251");
+
+    expect(recorded.status).toBe("blocked");
+    expect(recorded.problems[0].code).toBe(
+      "UE4SS_RUNTIME_VALIDATION_SOURCE_BLOCKED"
+    );
+    expect(snapshot.ue4ss?.source).toBe("bundled");
+  });
+
+  it("blocks validation evidence when the imported runtime structure is later invalid", async () => {
+    const { root, manager } = await makeRuntimeManager();
+    const runtimeZip = await createLegacyRuntimeZip(
+      path.join(root, "UE4SS_user_tampered.zip")
+    );
+    const imported = await manager.importUe4ssRuntime({
+      sourcePath: runtimeZip
+    });
+    await rm(path.join(imported.runtime!.installPath, "xinput1_3.dll"), {
+      force: true
+    });
+
+    const recorded = await manager.recordUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "24742251",
+      fingerprintSha256: "d".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMUserRuntimeValidation"
+    });
+    const snapshot = await manager.getRuntimeSnapshot("24742251");
+
+    expect(recorded.status).toBe("failed");
+    expect(recorded.problems[0].code).toBe("UE4SS_RUNTIME_FILE_MISSING");
+    expect(snapshot.status).toBe("invalid");
   });
 });

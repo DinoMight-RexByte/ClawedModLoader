@@ -12,10 +12,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   LaunchCommandKind,
   LaunchCommandResult,
-  PlaySnapshot
+  PlaySnapshot,
+  ValidatePackagedRuntimeResult
 } from "../../shared/contracts/app";
 import { StatusCard } from "../components/StatusCard";
 import { useAppStore } from "../stores/appStore";
+
+type BusyAction = LaunchCommandKind | "validateRuntime";
 
 const commandButtons: Array<{
   kind: LaunchCommandKind;
@@ -106,16 +109,43 @@ function deploymentTone(
   return undefined;
 }
 
+function validationTitle(status: ValidatePackagedRuntimeResult["status"]): string {
+  switch (status) {
+    case "validated":
+      return "Runtime validated";
+    case "incompatible":
+      return "Runtime validation failed";
+    case "blocked":
+      return "Runtime validation blocked";
+    case "failed":
+      return "Runtime validation failed";
+  }
+}
+
+function validationMessage(result: ValidatePackagedRuntimeResult): string {
+  const firstProblem = result.problems[0];
+  if (firstProblem) {
+    return firstProblem.message;
+  }
+
+  if (result.status === "validated") {
+    return "The packaged UE4SS runtime is now validated for the detected Clawed build.";
+  }
+
+  return "CMM could not validate the packaged UE4SS runtime.";
+}
+
 export function PlayPage(): ReactElement {
   const profileRevision = useAppStore((state) => state.profileRevision);
   const [snapshot, setSnapshot] = useState<PlaySnapshot | null>(null);
   const [commandResult, setCommandResult] =
     useState<LaunchCommandResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [busyCommand, setBusyCommand] = useState<LaunchCommandKind | null>(
-    null
-  );
+  const [busyCommand, setBusyCommand] = useState<BusyAction | null>(null);
   const refreshInFlight = useRef(false);
+  const canValidateRuntime =
+    snapshot?.runtime.status === "unvalidated" &&
+    snapshot.runtime.ue4ss?.source === "bundled";
 
   const refreshSnapshot = useCallback(async () => {
     if (refreshInFlight.current) {
@@ -156,7 +186,10 @@ export function PlayPage(): ReactElement {
 
   const runCommand = async (
     kind: LaunchCommandKind,
-    forceCloseConfirmed = false
+    options: {
+      forceCloseConfirmed?: boolean;
+      runtimeValidationConfirmed?: boolean;
+    } = {}
   ) => {
     setBusyCommand(kind);
     setError(null);
@@ -164,12 +197,39 @@ export function PlayPage(): ReactElement {
     try {
       const result = await window.cmm.runLaunchCommand({
         kind,
-        forceCloseConfirmed
+        ...options
       });
       setCommandResult(result);
       await refreshSnapshot();
     } catch {
       setError("The command could not be completed.");
+    } finally {
+      setBusyCommand(null);
+    }
+  };
+
+  const runRuntimeValidation = async () => {
+    setBusyCommand("validateRuntime");
+    setError(null);
+
+    try {
+      const result = await window.cmm.validatePackagedRuntime();
+      setCommandResult({
+        kind: "launchModded",
+        launchMode: "MODDED",
+        lifecycleState: snapshot?.gameState === "RUNNING" ? "RUNNING" : "STOPPED",
+        status: result.status === "validated" ? "completed" : "blocked",
+        title: validationTitle(result.status),
+        message: validationMessage(result),
+        nextStep:
+          result.evidencePath ??
+          result.problems[0]?.technicalDetail ??
+          undefined,
+        occurredAt: new Date().toISOString()
+      });
+      await refreshSnapshot();
+    } catch {
+      setError("The runtime validation could not be completed.");
     } finally {
       setBusyCommand(null);
     }
@@ -257,7 +317,7 @@ export function PlayPage(): ReactElement {
             Refresh
           </button>
         </div>
-        <div className="grid gap-3 sm:grid-cols-[minmax(220px,1fr)_minmax(170px,auto)_minmax(150px,auto)]">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {commandButtons.map((command) => (
             <button
               className={`inline-flex h-12 items-center justify-center gap-2 rounded-md px-4 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:cursor-not-allowed disabled:opacity-60 ${
@@ -282,6 +342,25 @@ export function PlayPage(): ReactElement {
               <span>{command.label}</span>
             </button>
           ))}
+          {canValidateRuntime ? (
+            <button
+              className="inline-flex h-12 items-center justify-center gap-2 rounded-md border border-app-border px-4 text-sm font-semibold text-app-text transition hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={busyCommand !== null}
+              onClick={() => void runRuntimeValidation()}
+              type="button"
+            >
+              {busyCommand === "validateRuntime" ? (
+                <RefreshCw
+                  aria-hidden="true"
+                  className="motion-safe:animate-spin"
+                  size={18}
+                />
+              ) : (
+                <CheckCircle2 aria-hidden="true" size={18} />
+              )}
+              <span>Validate</span>
+            </button>
+          ) : null}
         </div>
 
         {commandResult ? (
@@ -311,10 +390,25 @@ export function PlayPage(): ReactElement {
                 </button>
                 <button
                   className="h-10 rounded-md bg-app-danger px-4 text-sm font-semibold text-app-accentText hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-danger"
-                  onClick={() => void runCommand("restartGame", true)}
+                  onClick={() =>
+                    void runCommand("restartGame", {
+                      forceCloseConfirmed: true
+                    })
+                  }
                   type="button"
                 >
                   Force Close & Restart
+                </button>
+              </div>
+            ) : null}
+            {commandResult.canOpenRuntimeValidationFlow ? (
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  className="h-10 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+                  onClick={() => void runRuntimeValidation()}
+                  type="button"
+                >
+                  Validate
                 </button>
               </div>
             ) : null}

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import JSZip from "jszip";
 
 import {
   CreatorAssetConflictGraphRequestSchema,
@@ -18,10 +19,14 @@ import {
   CreatorAssetTreeNodeSchema,
   CreatorAssetTreeRequestSchema,
   CreatorAssetTreeResultSchema,
+  ClawedModManifestV1Schema,
   CreatorExportPlanRequestSchema,
   CreatorExportPlanResultSchema,
   CreatorMeshExportRequestSchema,
   CreatorMeshExportResultSchema,
+  CreatorMeshPackageExportItemSchema,
+  CreatorMeshPackageExportRequestSchema,
+  CreatorMeshPackageExportResultSchema,
   CreatorPreviewLookupRequestSchema,
   CreatorPreviewLookupResultSchema,
   type CreatorAssetChecksum,
@@ -42,6 +47,8 @@ import {
   type CreatorExportOutput,
   type CreatorExportPlanItem,
   type CreatorMeshExportFormat,
+  type CreatorMeshPackageExportItem,
+  type CreatorMeshPackageExportRequest,
   type CreatorMeshExportRequest,
   type CreatorMeshExportResult,
   type CreatorModelPreviewFormat,
@@ -64,6 +71,7 @@ import type {
   ModLibraryServiceContract,
   ProfileServiceContract
 } from "../../shared/contracts/services";
+import type { LifecycleLogger } from "./lifecycleLogger";
 import { modProblem } from "./packageProblems";
 import { isPathInside } from "./packagePaths";
 
@@ -78,6 +86,11 @@ const MAX_MODEL_PREVIEW_BYTES = 15 * 1024 * 1024;
 const MODEL_PREVIEW_FORMATS = new Set(["gltf", "glb", "obj"]);
 const MESH_EXPORT_FORMATS = new Set(["obj", "gltf", "glb"]);
 const BASE_GAME_PREVIEW_INDEX = "index.json";
+const BASE_GAME_MESH_ASSET_CLASSES = new Set([
+  "StaticMesh",
+  "SkeletalMesh",
+  "Skeleton"
+]);
 
 interface AssetRegistryOptions {
   mapRoot?: string;
@@ -86,6 +99,7 @@ interface AssetRegistryOptions {
   baseGameMeshDecoder?: BaseGameMeshDecoder;
   gameInstallPath?: string;
   protectedGameRoots?: string[];
+  logger?: LifecycleLogger;
 }
 
 interface BaseMapIndex {
@@ -171,8 +185,26 @@ export interface BaseGameMeshDecodeResult {
   problems?: ModProblem[];
 }
 
+export interface BaseGameMeshProbeRequest {
+  asset: CreatorAssetIndexEntry;
+  cookedPayload: BaseGameCookedPayload;
+  purpose: "preview" | "export";
+}
+
+export interface BaseGameMeshProbeResult {
+  status: "ready" | "unsupported" | "dependency-missing" | "decode-error";
+  assetClass?: string | null;
+  metadata?: Partial<CreatorModelPreviewMetadata>;
+  problems?: ModProblem[];
+}
+
 export interface BaseGameMeshDecoder {
   isAvailable?(): boolean | Promise<boolean>;
+  supportsFormat?(
+    format: CreatorMeshExportFormat,
+    asset: CreatorAssetIndexEntry
+  ): boolean;
+  probe?(request: BaseGameMeshProbeRequest): Promise<BaseGameMeshProbeResult>;
   decode(request: BaseGameMeshDecodeRequest): Promise<BaseGameMeshDecodeResult>;
 }
 
@@ -195,11 +227,21 @@ interface CachedBaseGamePreviewEntry {
 interface BaseGameModelPreviewOptions {
   baseGamePreviewRoot: string | null;
   baseGameMeshDecoder: BaseGameMeshDecoder | null;
+  resolveBaseGameMeshProbe?: BaseGameMeshProbeResolver;
 }
+
+type BaseGameMeshProbeResolver = (
+  asset: CreatorAssetIndexEntry,
+  purpose: BaseGameMeshProbeRequest["purpose"]
+) => Promise<BaseGameMeshProbeResult | null>;
 
 export class LocalAssetRegistryService implements AssetRegistryServiceContract {
   private baseMapIndex: Promise<BaseMapIndex> | null = null;
   private baseMapSummaryIndex: Promise<BaseMapSummaryIndex> | null = null;
+  private readonly baseGameMeshProbeCache = new Map<
+    string,
+    Promise<BaseGameMeshProbeResult>
+  >();
 
   constructor(
     private readonly modLibraryService: ModLibraryServiceContract,
@@ -243,7 +285,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
 
   async getAssetTree(request: unknown) {
     const parsed = CreatorAssetTreeRequestSchema.parse(request);
-    if (!parsed.parentId && !parsed.query.trim()) {
+    if (!parsed.parentId && !parsed.query.trim() && !parsed.activeOnly) {
       const snapshot = await this.buildSnapshot();
       return CreatorAssetTreeResultSchema.parse({
         generatedAt: snapshot.generatedAt,
@@ -343,7 +385,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
               modProblem(
                 "info",
                 "BASE_GAME_PREVIEW_NOT_CACHED",
-                "No cached base-game preview is indexed for this asset. CMM can still attempt direct decode for supported mesh assets."
+                "No cached base-game preview is indexed for this asset. CMM can still attempt direct decode for supported model assets."
               )
             ]
         : []
@@ -353,52 +395,63 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
   async getModelPreview(request: unknown) {
     const parsed = CreatorModelPreviewRequestSchema.parse(request);
     const index = await this.buildIndex();
-    return readModelPreview(parsed, index, {
+    const result = await readModelPreview(parsed, index, {
       baseGamePreviewRoot: this.getBaseGamePreviewRoot(),
-      baseGameMeshDecoder: this.options.baseGameMeshDecoder ?? null
+      baseGameMeshDecoder: this.options.baseGameMeshDecoder ?? null,
+      resolveBaseGameMeshProbe: this.probeBaseGameMeshAsset.bind(this)
     });
+    await this.logCreatorResult("creator_model_preview", result.status, {
+      assetId: parsed.assetId,
+      assetClass: result.asset?.assetClass ?? null,
+      source: result.model?.source ?? null
+    }, result.problems);
+    return result;
   }
 
   async getExportPlan(request: unknown) {
     const parsed = CreatorExportPlanRequestSchema.parse(request);
     const index = await this.buildIndex();
-    const decoderAvailable = await isDecoderAvailable(
-      this.options.baseGameMeshDecoder ?? null
-    );
+    const decoder = this.options.baseGameMeshDecoder ?? null;
+    const decoderAvailable = await isDecoderAvailable(decoder);
     const items = (
       await Promise.all(
         parsed.assetIds.map(async (assetId) => {
-      const asset = index.entriesById.get(assetId);
-      if (!asset) {
-        return null;
-      }
+          const asset = index.entriesById.get(assetId);
+          if (!asset) {
+            return null;
+          }
 
-      const eligibility =
-        index.eligibilityByAssetId.get(assetId) ?? defaultEligibility(asset);
-      const meshBlockReason = isMeshExportOutput(parsed.output)
-        ? await meshExportPlanBlockReason(
+          const eligibility =
+            index.eligibilityByAssetId.get(assetId) ?? defaultEligibility(asset);
+          const meshBlockReason = isMeshExportOutput(parsed.output)
+            ? await meshExportPlanBlockReason(
+                asset,
+                parsed.output,
+                decoderAvailable,
+                this.getBaseGamePreviewRoot(),
+                decoder,
+                this.probeBaseGameMeshAsset.bind(this)
+              )
+            : null;
+          const allowed =
+            !meshBlockReason &&
+            (isMeshExportOutput(parsed.output) ||
+              isOutputAllowed(parsed.output, eligibility));
+          return {
             asset,
-            parsed.output,
-            decoderAvailable,
-            this.getBaseGamePreviewRoot()
-          )
-        : null;
-      const allowed = !meshBlockReason && isOutputAllowed(parsed.output, eligibility);
-      return {
-        asset,
-        eligibility,
-        status: allowed
-          ? ("allowed" as const)
-          : eligibility.state === "unknown"
-            ? ("unknown" as const)
-            : ("blocked" as const),
-        reason: allowed
-          ? null
-          : meshBlockReason ??
-            eligibility.reason ??
-            "The selected output is not allowed for this asset."
-      };
-    })
+            eligibility,
+            status: allowed
+              ? ("allowed" as const)
+              : eligibility.state === "unknown"
+                ? ("unknown" as const)
+                : ("blocked" as const),
+            reason: allowed
+              ? null
+              : meshBlockReason ??
+                eligibility.reason ??
+                "The selected output is not allowed for this asset."
+          };
+        })
       )
     ).filter((item): item is CreatorExportPlanItem => Boolean(item));
     const blocked = items.filter((item) => item.status !== "allowed");
@@ -434,11 +487,101 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
   async exportMesh(request: unknown): Promise<CreatorMeshExportResult> {
     const parsed = CreatorMeshExportRequestSchema.parse(request);
     const index = await this.buildIndex();
-    return exportCreatorMesh(parsed, index, {
+    const result = await exportCreatorMesh(parsed, index, {
       baseGamePreviewRoot: this.getBaseGamePreviewRoot(),
       baseGameMeshDecoder: this.options.baseGameMeshDecoder ?? null,
+      resolveBaseGameMeshProbe: this.probeBaseGameMeshAsset.bind(this),
       protectedGameRoots: await this.getProtectedGameRoots()
     });
+    await this.logCreatorResult("creator_mesh_export", result.status, {
+      assetId: parsed.assetId,
+      format: parsed.format,
+      destinationPath: result.destinationPath
+    }, result.problems);
+    return result;
+  }
+
+  async exportMeshPackage(request: unknown) {
+    const parsed = CreatorMeshPackageExportRequestSchema.parse(request);
+    const index = await this.buildIndex();
+    const result = await exportCreatorMeshPackage(parsed, index, {
+      baseGamePreviewRoot: this.getBaseGamePreviewRoot(),
+      baseGameMeshDecoder: this.options.baseGameMeshDecoder ?? null,
+      resolveBaseGameMeshProbe: this.probeBaseGameMeshAsset.bind(this),
+      protectedGameRoots: await this.getProtectedGameRoots()
+    });
+    await this.logCreatorResult("creator_mesh_package_export", result.status, {
+      itemCount: result.itemCount,
+      exportedCount: result.exportedCount,
+      destinationPath: result.destinationPath
+    }, result.problems);
+    return result;
+  }
+
+  private async probeBaseGameMeshAsset(
+    asset: CreatorAssetIndexEntry,
+    purpose: BaseGameMeshProbeRequest["purpose"]
+  ): Promise<BaseGameMeshProbeResult | null> {
+    const decoder = this.options.baseGameMeshDecoder;
+    if (
+      !decoder?.probe ||
+      !shouldProbeBaseGameMeshAsset(asset) ||
+      !(await isDecoderAvailable(decoder))
+    ) {
+      return null;
+    }
+
+    const key = baseGameMeshProbeKey(asset, purpose);
+    let probe = this.baseGameMeshProbeCache.get(key);
+    if (!probe) {
+      probe = decoder
+        .probe({
+          asset,
+          cookedPayload: baseGameCookedPayloadForAsset(asset),
+          purpose
+        })
+        .catch((error): BaseGameMeshProbeResult => ({
+          status: "decode-error",
+          problems: [
+            modProblem(
+              "warning",
+              "BASE_GAME_MESH_PROBE_FAILED",
+              "The base-game mesh decoder could not classify this cooked Unreal asset.",
+              error instanceof Error ? error.message : String(error)
+            )
+          ]
+        }));
+      this.baseGameMeshProbeCache.set(key, probe);
+    }
+
+    return probe;
+  }
+
+  private async logCreatorResult(
+    action: string,
+    status: string,
+    details: Record<string, string | number | boolean | null>,
+    problems: ModProblem[]
+  ): Promise<void> {
+    if (!this.options.logger || (isCreatorOkStatus(status) && !problems.length)) {
+      return;
+    }
+    const firstProblem = problems[0] ?? null;
+    await this.options.logger
+      .log({
+        category: "assetRegistryService",
+        action,
+        result: creatorLogResult(status),
+        errorCode: firstProblem?.code,
+        message: firstProblem?.message ?? status,
+        details: {
+          ...details,
+          status,
+          problemCount: problems.length,
+          technicalDetail: firstProblem?.technicalDetail ?? null
+        }
+      })
+      .catch(() => undefined);
   }
 
   async getReport(request: unknown) {
@@ -1098,6 +1241,20 @@ function mapRowToEntry(row: CsvMapRow): CreatorAssetIndexEntry | null {
   });
 }
 
+function isCreatorOkStatus(status: string): boolean {
+  return ["available", "ready", "exported", "partial"].includes(status);
+}
+
+function creatorLogResult(status: string): "ok" | "blocked" | "failed" | "requested" {
+  if (isCreatorOkStatus(status)) {
+    return "ok";
+  }
+  if (["decode-error", "error", "export-error"].includes(status)) {
+    return "failed";
+  }
+  return "blocked";
+}
+
 async function readPayloadEntries(
   record: InstalledModManifestRecord,
   activeProfileEnabled: boolean,
@@ -1646,7 +1803,7 @@ function rootTreeNodes(
     {
       source: "installedPackage",
       label: "Installed Package Assets",
-      childCount: snapshot.totals.installedPackages
+      childCount: snapshot.totals.installedPackages + snapshot.totals.affectedAssets
     },
     {
       source: "packagePayload",
@@ -1674,6 +1831,35 @@ function rootTreeNodes(
         childCount: root.childCount
       })
     );
+}
+
+function rootTreeNodesFromEntries(
+  index: RuntimeAssetIndex,
+  request: CreatorAssetTreeRequest
+): CreatorAssetTreeNode[] {
+  return [
+    { source: "baseGameMap" as const, label: "Clawed Base Game" },
+    { source: "installedPackage" as const, label: "Installed Package Assets" },
+    { source: "packagePayload" as const, label: "Package Payloads" },
+    { source: "deployment" as const, label: "Active Deployment" }
+  ]
+    .filter((root) => request.source === "all" || root.source === request.source)
+    .map((root) => {
+      const childCount = entriesForTree(
+        { ...request, source: root.source },
+        index
+      ).length;
+      return CreatorAssetTreeNodeSchema.parse({
+        id: rootTreeNodeId(root.source),
+        label: root.label,
+        kind: "root",
+        source: root.source,
+        path: "",
+        assetId: null,
+        hasChildren: childCount > 0,
+        childCount
+      });
+    });
 }
 
 function buildAssetTreeResult(
@@ -1712,7 +1898,7 @@ function childTreeNodes(
 ): CreatorAssetTreeNode[] {
   const parent = parseTreeNodeId(request.parentId);
   if (!parent) {
-    return rootTreeNodes(index.snapshot, request);
+    return rootTreeNodesFromEntries(index, request);
   }
   if (parent.kind === "asset") {
     return [];
@@ -1798,7 +1984,8 @@ function assetTreeNode(
     packageName: entry.packageName,
     validationState: entry.validationState,
     conflictState: entry.conflictState,
-    exportState: entry.exportState
+    exportState: entry.exportState,
+    viewportState: viewportStateForEntry(entry)
   });
 }
 
@@ -2185,6 +2372,10 @@ async function readModelPreview(
     return readBaseGameModelPreview(asset, detail, options);
   }
 
+  if (asset.source === "packagePayload" && isModelPayloadAsset(asset)) {
+    return readPackagePayloadModelPreview(asset, detail, index);
+  }
+
   const modelPreviews = detail.previews.filter(
     (preview) => preview.kind === "model"
   );
@@ -2402,28 +2593,6 @@ async function readBaseGameModelPreview(
     });
   }
 
-  if (!isSupportedBaseGameMeshAsset(asset)) {
-    return CreatorModelPreviewResultSchema.parse({
-      status: "unsupported",
-      asset,
-      preview: null,
-      activeWinner: detail.activeWinner,
-      model: null,
-      metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
-        previewSource: "Unsupported base-game asset class"
-      }),
-      problems: [
-        ...(cached?.problems ?? []),
-        modProblem(
-          "info",
-          "BASE_GAME_MODEL_PREVIEW_UNSUPPORTED_ASSET_CLASS",
-          "Only base-game StaticMesh and SkeletalMesh assets can be decoded for the Creator viewport.",
-          decoderTechnicalDetail(asset, "resolve-asset", "unsupported asset class")
-        )
-      ]
-    });
-  }
-
   const decoder = options.baseGameMeshDecoder;
   if (!decoder || !(await isDecoderAvailable(decoder))) {
     return CreatorModelPreviewResultSchema.parse({
@@ -2447,11 +2616,32 @@ async function readBaseGameModelPreview(
     });
   }
 
-  const requestedFormat = preferredBaseGamePreviewFormat(asset);
+  const resolved = await resolveBaseGameRenderableAsset(asset, options, "preview");
+  if (!resolved.asset) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: baseGameProbeFailureStatus(resolved.probe),
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+        ...(resolved.probe?.metadata ?? {}),
+        previewSource: "Unsupported base-game asset class"
+      }),
+      problems: [
+        ...(cached?.problems ?? []),
+        ...baseGameProbeProblems(asset, resolved.probe)
+      ]
+    });
+  }
+
+  const renderAsset = resolved.asset;
+  const renderDetail = detailWithAsset(detail, renderAsset);
+  const requestedFormat = preferredBaseGamePreviewFormat(renderAsset);
   const decoded = await decoder.decode({
-    asset,
-    detail,
-    cookedPayload: baseGameCookedPayloadForAsset(asset),
+    asset: renderAsset,
+    detail: renderDetail,
+    cookedPayload: baseGameCookedPayloadForAsset(renderAsset),
     format: requestedFormat,
     purpose: "preview"
   });
@@ -2460,7 +2650,7 @@ async function readBaseGameModelPreview(
     const format = decoded.format ?? requestedFormat;
     return CreatorModelPreviewResultSchema.parse({
       status: "available",
-      asset,
+      asset: renderAsset,
       preview: null,
       activeWinner: detail.activeWinner,
       model: {
@@ -2470,29 +2660,179 @@ async function readBaseGameModelPreview(
         fileName: decoded.fileName ?? baseGameMeshFileName(asset, format),
         sizeBytes: decoded.data.byteLength
       },
-      metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+      metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
         ...decoded.metadata,
         previewSource: "Direct decoded base-game asset"
       }),
-      problems: [...(cached?.problems ?? []), ...(decoded.problems ?? [])]
+      problems: [
+        ...(cached?.problems ?? []),
+        ...(resolved.probe?.problems ?? []),
+        ...(decoded.problems ?? [])
+      ]
     });
   }
 
   return CreatorModelPreviewResultSchema.parse({
     status: decoded.status === "dependency-missing" ? "dependency-missing" : decoded.status,
-    asset,
+    asset: renderAsset,
     preview: null,
     activeWinner: detail.activeWinner,
     model: null,
-    metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+    metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
       ...(decoded.metadata ?? {}),
       previewSource: "Direct base-game decode failed"
     }),
     problems: [
       ...(cached?.problems ?? []),
-      ...baseGameDecoderProblems(asset, decoded)
+      ...(resolved.probe?.problems ?? []),
+      ...baseGameDecoderProblems(renderAsset, decoded)
     ]
   });
+}
+
+async function readPackagePayloadModelPreview(
+  asset: CreatorAssetIndexEntry,
+  detail: CreatorAssetDetail,
+  index: RuntimeAssetIndex
+): Promise<CreatorModelPreviewResult> {
+  const format = packagePayloadModelFormat(asset);
+  if (!format) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "unsupported",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "info",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_UNSUPPORTED_FORMAT",
+          "The package payload model format is not supported by the Creator viewport.",
+          asset.extension ?? asset.payloadPath ?? asset.label
+        )
+      ]
+    });
+  }
+
+  const record = packageRecordForAsset(asset, index);
+  if (!record || !asset.payloadPath) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "error",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "warning",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_MISSING",
+          "The package that owns this model payload is not installed."
+        )
+      ]
+    });
+  }
+
+  const payloadPath = normalizeArchivePath(asset.payloadPath);
+  const payloadRoot = path.resolve(record.mod.installPath, "payload");
+  const filePath = path.resolve(record.mod.installPath, payloadPath);
+  if (!isPathInside(payloadRoot, filePath)) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "blocked",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "error",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_PATH_BLOCKED",
+          "The model payload path is outside the package payload directory.",
+          asset.payloadPath
+        )
+      ]
+    });
+  }
+
+  const fileStat = await stat(filePath).catch(() => null);
+  if (!fileStat?.isFile()) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "error",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "warning",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_FILE_MISSING",
+          "The model payload entry could not be read from the installed package.",
+          asset.payloadPath
+        )
+      ]
+    });
+  }
+
+  if (fileStat.size > MAX_MODEL_PREVIEW_BYTES) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "unsupported",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "warning",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_TOO_LARGE",
+          "The model payload is larger than the Creator viewport transfer limit.",
+          `${fileStat.size} bytes`
+        )
+      ]
+    });
+  }
+
+  try {
+    const content = await readFile(filePath);
+    return CreatorModelPreviewResultSchema.parse({
+      status: "available",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: {
+        dataUrl: dataUrlForModel(content, format),
+        format,
+        source: "packagePayload",
+        fileName: path.basename(payloadPath),
+        sizeBytes: fileStat.size
+      },
+      metadata: {
+        ...modelPreviewMetadata(asset, null, detail),
+        previewSource: "Package model payload"
+      },
+      problems: []
+    });
+  } catch (error) {
+    return CreatorModelPreviewResultSchema.parse({
+      status: "error",
+      asset,
+      preview: null,
+      activeWinner: detail.activeWinner,
+      model: null,
+      metadata: modelPreviewMetadata(asset, null, detail),
+      problems: [
+        modProblem(
+          "warning",
+          "CREATOR_PACKAGE_MODEL_PAYLOAD_READ_FAILED",
+          "The model payload could not be read from the installed package.",
+          error instanceof Error ? error.message : String(error)
+        )
+      ]
+    });
+  }
 }
 
 async function readCachedBaseGameModelPreview(
@@ -2821,7 +3161,7 @@ async function exportCreatorMesh(
         modProblem(
           "info",
           "CREATOR_MESH_EXPORT_UNSUPPORTED_SOURCE",
-          "Only indexed base-game mesh assets can use direct mesh export."
+          "Only indexed base-game model assets can use direct mesh export."
         )
       ]
     });
@@ -2850,36 +3190,38 @@ async function exportCreatorMesh(
     });
   }
 
-  if (!isSupportedBaseGameMeshAsset(asset)) {
+  const decoder = options.baseGameMeshDecoder;
+  const resolved = await resolveBaseGameRenderableAsset(asset, options, "export");
+  if (!resolved.asset) {
     return CreatorMeshExportResultSchema.parse({
-      status: "unsupported",
+      status: baseGameProbeFailureStatus(resolved.probe),
       asset,
       format: request.format,
       destinationPath,
       bytesWritten: null,
-      metadata,
+      metadata: baseGameModelPreviewMetadata(asset, detail, null, {
+        ...(resolved.probe?.metadata ?? {}),
+        previewSource: "Direct base-game export unsupported"
+      }),
       problems: [
-        modProblem(
-          "info",
-          "CREATOR_MESH_EXPORT_UNSUPPORTED_ASSET_CLASS",
-          "Only base-game StaticMesh and SkeletalMesh assets can be exported as mesh interchange files.",
-          decoderTechnicalDetail(asset, "resolve-asset", "unsupported asset class")
-        )
+        ...baseGameProbeProblems(asset, resolved.probe)
       ]
     });
   }
 
+  const renderAsset = resolved.asset;
+  const renderDetail = detailWithAsset(detail, renderAsset);
   const cached = options.baseGamePreviewRoot
     ? await readCachedBaseGameModelPreview(
-        asset,
-        detail,
+        renderAsset,
+        renderDetail,
         options.baseGamePreviewRoot
       )
     : null;
 
   if (cached?.status === "available" && cached.format === request.format) {
     return writeMeshExportResult({
-      asset,
+      asset: renderAsset,
       format: request.format,
       destinationPath,
       data: cached.data,
@@ -2888,15 +3230,14 @@ async function exportCreatorMesh(
     });
   }
 
-  const decoder = options.baseGameMeshDecoder;
   if (!decoder || !(await isDecoderAvailable(decoder))) {
     return CreatorMeshExportResultSchema.parse({
       status: "unsupported",
-      asset,
+      asset: renderAsset,
       format: request.format,
       destinationPath,
       bytesWritten: null,
-      metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+      metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
         previewSource: "Direct base-game export unavailable"
       }),
       problems: [
@@ -2905,16 +3246,38 @@ async function exportCreatorMesh(
           "info",
           "BASE_GAME_MESH_DECODER_UNAVAILABLE",
           "No base-game mesh decoder is configured for cooked Unreal mesh conversion.",
-          decoderTechnicalDetail(asset, "configure-decoder", "decoder unavailable")
+          decoderTechnicalDetail(renderAsset, "configure-decoder", "decoder unavailable")
+        )
+      ]
+    });
+  }
+
+  if (!decoderSupportsFormat(decoder, request.format, renderAsset)) {
+    return CreatorMeshExportResultSchema.parse({
+      status: "unsupported",
+      asset: renderAsset,
+      format: request.format,
+      destinationPath,
+      bytesWritten: null,
+      metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
+        previewSource: "Direct base-game export unsupported"
+      }),
+      problems: [
+        ...(cached?.problems ?? []),
+        modProblem(
+          "info",
+          "BASE_GAME_MESH_FORMAT_UNSUPPORTED",
+          "The configured base-game mesh decoder does not support this output format for the selected asset.",
+          `${renderAsset.assetClass ?? "unknown"} -> ${request.format}`
         )
       ]
     });
   }
 
   const decoded = await decoder.decode({
-    asset,
-    detail,
-    cookedPayload: baseGameCookedPayloadForAsset(asset),
+    asset: renderAsset,
+    detail: renderDetail,
+    cookedPayload: baseGameCookedPayloadForAsset(renderAsset),
     format: request.format,
     purpose: "export"
   });
@@ -2924,35 +3287,461 @@ async function exportCreatorMesh(
       status:
         decoded.status === "dependency-missing"
           ? "dependency-missing"
-          : decoded.status === "decode-error"
-            ? "decode-error"
-            : "unsupported",
-      asset,
+            : decoded.status === "decode-error"
+              ? "decode-error"
+              : "unsupported",
+      asset: renderAsset,
       format: request.format,
       destinationPath,
       bytesWritten: null,
-      metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+      metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
         ...(decoded.metadata ?? {}),
         previewSource: "Direct base-game export failed"
       }),
       problems: [
         ...(cached?.problems ?? []),
-        ...baseGameDecoderProblems(asset, decoded)
+        ...(resolved.probe?.problems ?? []),
+        ...baseGameDecoderProblems(renderAsset, decoded)
       ]
     });
   }
 
   return writeMeshExportResult({
-    asset,
+    asset: renderAsset,
     format: decoded.format ?? request.format,
     destinationPath,
     data: decoded.data,
-    metadata: baseGameModelPreviewMetadata(asset, detail, cached?.entry ?? null, {
+    metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, cached?.entry ?? null, {
       ...decoded.metadata,
       previewSource: "Direct decoded base-game export"
     }),
-    problems: [...(cached?.problems ?? []), ...(decoded.problems ?? [])]
+    problems: [
+      ...(cached?.problems ?? []),
+      ...(resolved.probe?.problems ?? []),
+      ...(decoded.problems ?? [])
+    ]
   });
+}
+
+async function exportCreatorMeshPackage(
+  request: CreatorMeshPackageExportRequest,
+  index: RuntimeAssetIndex,
+  options: BaseGameModelPreviewOptions & { protectedGameRoots: string[] }
+) {
+  const destinationPath = path.resolve(request.destinationPath);
+  const blockedRoot = options.protectedGameRoots.find((root) =>
+    isPathInside(root, destinationPath)
+  );
+  if (blockedRoot) {
+    return CreatorMeshPackageExportResultSchema.parse({
+      status: "blocked",
+      destinationPath,
+      bytesWritten: null,
+      itemCount: request.assetIds.length,
+      exportedCount: 0,
+      items: [],
+      problems: [
+        modProblem(
+          "error",
+          "CREATOR_MESH_PACKAGE_EXPORT_GAME_PATH_BLOCKED",
+          "Creator model package export cannot write into the Clawed game installation.",
+          `${destinationPath} inside ${blockedRoot}`
+        )
+      ]
+    });
+  }
+
+  const assetIds = [...new Set(request.assetIds)];
+  if (!assetIds.length) {
+    return CreatorMeshPackageExportResultSchema.parse({
+      status: "empty",
+      destinationPath,
+      bytesWritten: null,
+      itemCount: 0,
+      exportedCount: 0,
+      items: [],
+      problems: []
+    });
+  }
+
+  const items = await Promise.all(
+    assetIds.map((assetId, indexInPackage) =>
+      creatorMeshPackageItem(assetId, indexInPackage, index, options)
+    )
+  );
+  const exportedItems = items.filter(isExportedMeshPackageItem);
+
+  if (!exportedItems.length) {
+    return CreatorMeshPackageExportResultSchema.parse({
+      status: "blocked",
+      destinationPath,
+      bytesWritten: null,
+      itemCount: items.length,
+      exportedCount: 0,
+      items: publicMeshPackageItems(items),
+      problems: [
+        ...items.flatMap((item) => item.problems),
+        modProblem(
+          "warning",
+          "CREATOR_MESH_PACKAGE_EXPORT_EMPTY",
+          "No visible Creator model could be exported into the package."
+        )
+      ]
+    });
+  }
+
+  const zip = new JSZip();
+  const generatedAt = new Date().toISOString();
+  const payloadHashes = exportedItems.map((item) => ({
+    path: item.payloadPath,
+    sha256: hashBuffer(item.data)
+  }));
+  for (const item of exportedItems) {
+    zip.file(item.payloadPath, item.data);
+  }
+  zip.file(
+    "manifest.json",
+    `${JSON.stringify(
+      ClawedModManifestV1Schema.parse({
+        schemaVersion: 1,
+        id: `creator-visible-models-${hashStable(
+          `${generatedAt}\0${exportedItems.map((item) => item.asset?.id).join("\0")}`
+        )}`,
+        name: "Creator Visible Model Export",
+        version: "1.0.0",
+        author: "Clawed Mod Manager",
+        description:
+          "Creator export package containing model viewport payloads and metadata.",
+        game: "clawed",
+        loader: "pak",
+        dependencies: [],
+        conflicts: [],
+        loadAfter: [],
+        loadBefore: [],
+        creatorAssets: {
+          schemaVersion: 1,
+          affectedAssets: exportedItems.flatMap((item, itemIndex) =>
+            packageAffectedAssetsForItem(item, itemIndex)
+          ),
+          replacements: [],
+          cookTarget: {
+            unrealVersion: "5.5",
+            platform: "Windows",
+            containerFormat: "none",
+            requiresAssetRegistry: false,
+            toolName: "Clawed Mod Manager"
+          },
+          supportedSteamBuilds: index.snapshot.map.steamBuildId
+            ? [
+                {
+                  buildId: index.snapshot.map.steamBuildId,
+                  status: "authorClaim",
+                  evidence: "Creator viewport package export"
+                }
+              ]
+            : [],
+          previewAssets: exportedItems.map((item, itemIndex) => ({
+            id: `visible-${itemIndex + 1}-preview`,
+            payloadPath: item.payloadPath,
+            kind: "model",
+            assetClass: item.asset?.assetClass ?? "ModelPreview",
+            objectPath: item.asset?.objectPath ?? undefined,
+            source: "generated",
+            format: item.format,
+            modelRole: item.metadata.meshType,
+            skeleton: item.metadata.skeleton,
+            physicsAsset: item.metadata.physicsAsset,
+            materialSlots: item.metadata.materialSlots,
+            lods: item.metadata.lods,
+            dependencyPaths: item.metadata.dependencyPaths
+          })),
+          importProvenance: [
+            {
+              sourceKind: "generated",
+              sourceName: "CMM visible viewport package export",
+              sourceHashes: payloadHashes.map((payload) => ({
+                algorithm: "sha256",
+                scope: "payload",
+                path: payload.path,
+                sha256: payload.sha256
+              })),
+              importedAt: generatedAt,
+              toolName: "Clawed Mod Manager",
+              rights: exportedItems.some((item) => item.asset?.source === "baseGameMap")
+                ? "redistributable"
+                : "generated"
+            }
+          ],
+          assetDependencies: exportedItems.flatMap((item, itemIndex) =>
+            packageDependenciesForItem(item, itemIndex)
+          ),
+          exportEligibility: {
+            state: "exportable",
+            allowedOutputs: [
+              "clawedmod",
+              "assetIndex",
+              "dependencyGraph",
+              "conflictReport",
+              "validationReport"
+            ],
+            containsBaseGameContent: exportedItems.some(
+              (item) => item.asset?.source === "baseGameMap"
+            ),
+            requiresUserOwnedSource: false,
+            reason:
+              "This package contains Creator viewport model payloads exported from visible files."
+          }
+        }
+      }),
+      null,
+      2
+    )}\n`
+  );
+  zip.file(
+    "checksums.json",
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        payload: Object.fromEntries(
+          payloadHashes.map((payload) => [payload.path, payload.sha256])
+        )
+      },
+      null,
+      2
+    )}\n`
+  );
+  zip.file(
+    "README.md",
+    [
+      "# Creator Visible Model Export",
+      "",
+      "This package contains model viewport payloads exported from the current visible Creator selection.",
+      "It is metadata and creator-source output, not a validated gameplay replacement package.",
+      ""
+    ].join("\n")
+  );
+
+  try {
+    await mkdir(path.dirname(destinationPath), { recursive: true });
+    await writeFile(destinationPath, await zip.generateAsync({ type: "nodebuffer" }));
+    const fileStat = await stat(destinationPath);
+    return CreatorMeshPackageExportResultSchema.parse({
+      status: exportedItems.length === items.length ? "exported" : "partial",
+      destinationPath,
+      bytesWritten: fileStat.size,
+      itemCount: items.length,
+      exportedCount: exportedItems.length,
+      items: publicMeshPackageItems(items),
+      problems: items.flatMap((item) => item.problems)
+    });
+  } catch (error) {
+    return CreatorMeshPackageExportResultSchema.parse({
+      status: "export-error",
+      destinationPath,
+      bytesWritten: null,
+      itemCount: items.length,
+      exportedCount: 0,
+      items: publicMeshPackageItems(items),
+      problems: [
+        ...items.flatMap((item) => item.problems),
+        modProblem(
+          "warning",
+          "CREATOR_MESH_PACKAGE_EXPORT_WRITE_FAILED",
+          "The Creator model package could not be written to the selected path.",
+          error instanceof Error ? error.message : String(error)
+        )
+      ]
+    });
+  }
+}
+
+type InternalCreatorMeshPackageExportItem = CreatorMeshPackageExportItem & {
+  data?: Buffer;
+};
+
+type ExportedCreatorMeshPackageItem = InternalCreatorMeshPackageExportItem & {
+  status: "exported";
+  format: CreatorMeshExportFormat;
+  payloadPath: string;
+  data: Buffer;
+};
+
+function isExportedMeshPackageItem(
+  item: InternalCreatorMeshPackageExportItem
+): item is ExportedCreatorMeshPackageItem {
+  return (
+    item.status === "exported" &&
+    Boolean(item.payloadPath) &&
+    Boolean(item.format) &&
+    Boolean(item.data)
+  );
+}
+
+async function creatorMeshPackageItem(
+  assetId: string,
+  indexInPackage: number,
+  index: RuntimeAssetIndex,
+  options: BaseGameModelPreviewOptions
+): Promise<InternalCreatorMeshPackageExportItem> {
+  const preview = await readModelPreview({ assetId }, index, options);
+  const asset = preview.asset;
+  if (
+    (preview.status !== "available" && preview.status !== "ready") ||
+    !preview.model
+  ) {
+    return {
+      asset,
+      status: meshPackageItemStatus(preview.status),
+      format: preview.model?.format ?? null,
+      payloadPath: null,
+      bytesWritten: null,
+      metadata: preview.metadata,
+      problems:
+        preview.problems.length > 0
+          ? preview.problems
+          : [
+              modProblem(
+                "warning",
+                "CREATOR_MESH_PACKAGE_ITEM_UNAVAILABLE",
+                "This visible Creator model is not available for package export.",
+                assetId
+              )
+            ]
+    };
+  }
+
+  try {
+    const data = bufferFromDataUrl(preview.model.dataUrl);
+    const payloadPath = `payload/creator-exports/${String(
+      indexInPackage + 1
+    ).padStart(2, "0")}-${sanitizePathSegment(
+      path.basename(preview.model.fileName, path.extname(preview.model.fileName))
+    )}.${preview.model.format}`;
+    return {
+      asset,
+      status: "exported",
+      format: preview.model.format,
+      payloadPath,
+      bytesWritten: data.byteLength,
+      metadata: preview.metadata,
+      problems: preview.problems,
+      data
+    };
+  } catch (error) {
+    return {
+      asset,
+      status: "export-error",
+      format: preview.model.format,
+      payloadPath: null,
+      bytesWritten: null,
+      metadata: preview.metadata,
+      problems: [
+        ...preview.problems,
+        modProblem(
+          "warning",
+          "CREATOR_MESH_PACKAGE_ITEM_DATA_INVALID",
+          "The visible Creator model data could not be prepared for package export.",
+          error instanceof Error ? error.message : String(error)
+        )
+      ]
+    };
+  }
+}
+
+function publicMeshPackageItems(
+  items: InternalCreatorMeshPackageExportItem[]
+): CreatorMeshPackageExportItem[] {
+  return items.map((item) => {
+    const publicItem: Partial<InternalCreatorMeshPackageExportItem> = {
+      ...item
+    };
+    delete publicItem.data;
+    return CreatorMeshPackageExportItemSchema.parse(publicItem);
+  });
+}
+
+function meshPackageItemStatus(
+  status: CreatorModelPreviewResult["status"]
+): CreatorMeshPackageExportItem["status"] {
+  if (status === "blocked") {
+    return "blocked";
+  }
+  if (status === "dependency-missing") {
+    return "dependency-missing";
+  }
+  if (status === "decode-error") {
+    return "decode-error";
+  }
+  if (status === "error" || status === "export-error") {
+    return "export-error";
+  }
+  return "unsupported";
+}
+
+function bufferFromDataUrl(dataUrl: string): Buffer {
+  const encoded = dataUrl.split(",", 2)[1];
+  if (!encoded) {
+    throw new Error("Model preview data URL has no payload.");
+  }
+  return Buffer.from(encoded, "base64");
+}
+
+function packageAffectedAssetsForItem(
+  item: InternalCreatorMeshPackageExportItem,
+  itemIndex: number
+) {
+  const asset = item.asset;
+  const sourceId = `visible-${itemIndex + 1}-source`;
+  const exportId = `visible-${itemIndex + 1}-export`;
+  return [
+    {
+      id: sourceId,
+      assetClass: asset?.assetClass ?? "ModelPreview",
+      packagePath: asset?.packagePath ?? undefined,
+      objectPath: asset?.objectPath ?? undefined,
+      virtualPath: asset?.virtualPath ?? undefined,
+      source:
+        asset?.source === "baseGameMap"
+          ? "baseGame"
+          : asset?.source === "installedPackage" ||
+              asset?.source === "packagePayload"
+            ? "samePackage"
+            : "unknown",
+      role: "target",
+      tags: asset?.tags ?? []
+    },
+    {
+      id: exportId,
+      assetClass: asset?.assetClass ?? "ModelPreview",
+      payloadPath: item.payloadPath ?? undefined,
+      source: "generated",
+      role: "preview",
+      tags: uniqueStrings([...(asset?.tags ?? []), "model_visuals"])
+    }
+  ];
+}
+
+function packageDependenciesForItem(
+  item: InternalCreatorMeshPackageExportItem,
+  itemIndex: number
+) {
+  const asset = item.asset;
+  return item.metadata.dependencyPaths.map((dependencyPath, dependencyIndex) => ({
+    fromAssetId: `visible-${itemIndex + 1}-export`,
+    toAssetId: `visible-${itemIndex + 1}-dependency-${dependencyIndex + 1}`,
+    fromVirtualPath: item.payloadPath
+      ? `/Packages/creator-visible-models/${item.payloadPath.replace(
+          /^payload\//,
+          ""
+        )}`
+      : undefined,
+    toObjectPath: dependencyPath.startsWith("/") ? dependencyPath : undefined,
+    toVirtualPath: dependencyPath.startsWith("/") ? undefined : dependencyPath,
+    assetClass: asset?.assetClass ?? "ModelPreview",
+    relation: "viewport-dependency",
+    required: true,
+    source: asset?.source === "baseGameMap" ? "baseGame" : "unknown"
+  }));
 }
 
 async function writeMeshExportResult({
@@ -3005,7 +3794,179 @@ async function writeMeshExportResult({
 }
 
 function isSupportedBaseGameMeshAsset(asset: CreatorAssetIndexEntry): boolean {
-  return asset.assetClass === "StaticMesh" || asset.assetClass === "SkeletalMesh";
+  return isSupportedBaseGameMeshAssetClass(asset.assetClass);
+}
+
+function isSupportedBaseGameMeshAssetClass(
+  assetClass: string | null | undefined
+): boolean {
+  return BASE_GAME_MESH_ASSET_CLASSES.has(assetClass ?? "");
+}
+
+function shouldProbeBaseGameMeshAsset(asset: CreatorAssetIndexEntry): boolean {
+  if (
+    asset.source !== "baseGameMap" ||
+    (asset.extension ?? "").toLowerCase() !== ".uasset"
+  ) {
+    return false;
+  }
+  if (isSupportedBaseGameMeshAsset(asset)) {
+    return true;
+  }
+  return asset.assetClass === "CookedUnrealAsset";
+}
+
+function baseGameMeshProbeKey(
+  asset: CreatorAssetIndexEntry,
+  purpose: BaseGameMeshProbeRequest["purpose"]
+): string {
+  return [
+    purpose,
+    asset.id,
+    asset.sha256 ?? "",
+    asset.objectPath ?? "",
+    asset.packagePath ?? "",
+    asset.relativePath ?? ""
+  ].join("\0");
+}
+
+async function resolveBaseGameRenderableAsset(
+  asset: CreatorAssetIndexEntry,
+  options: BaseGameModelPreviewOptions,
+  purpose: BaseGameMeshProbeRequest["purpose"]
+): Promise<{
+  asset: CreatorAssetIndexEntry | null;
+  probe: BaseGameMeshProbeResult | null;
+}> {
+  const probe = options.resolveBaseGameMeshProbe
+    ? await options.resolveBaseGameMeshProbe(asset, purpose)
+    : null;
+  if (probe?.status === "ready") {
+    if (!isSupportedBaseGameMeshAssetClass(probe.assetClass)) {
+      return { asset: null, probe: { ...probe, status: "unsupported" } };
+    }
+    return {
+      asset: assetWithBaseGameMeshClass(asset, probe.assetClass as string),
+      probe
+    };
+  }
+  if (probe) {
+    return { asset: null, probe };
+  }
+  if (isSupportedBaseGameMeshAsset(asset)) {
+    return { asset, probe };
+  }
+  return { asset: null, probe };
+}
+
+function assetWithBaseGameMeshClass(
+  asset: CreatorAssetIndexEntry,
+  assetClass: string
+): CreatorAssetIndexEntry {
+  return CreatorAssetIndexEntrySchema.parse({
+    ...asset,
+    assetClass,
+    viewportState: "viewable",
+    exportState: "exportable"
+  });
+}
+
+function detailWithAsset(
+  detail: CreatorAssetDetail,
+  asset: CreatorAssetIndexEntry
+): CreatorAssetDetail {
+  return { ...detail, asset };
+}
+
+function baseGameProbeFailureStatus(
+  probe: BaseGameMeshProbeResult | null
+): "unsupported" | "dependency-missing" | "decode-error" {
+  if (probe?.status === "dependency-missing") {
+    return "dependency-missing";
+  }
+  if (probe?.status === "decode-error") {
+    return "decode-error";
+  }
+  return "unsupported";
+}
+
+function baseGameProbeProblems(
+  asset: CreatorAssetIndexEntry,
+  probe: BaseGameMeshProbeResult | null
+): ModProblem[] {
+  if (probe?.problems?.length) {
+    return probe.problems;
+  }
+  return [
+    modProblem(
+      "info",
+      "BASE_GAME_MODEL_PREVIEW_UNSUPPORTED_ASSET_CLASS",
+      "Only base-game StaticMesh, SkeletalMesh, and Skeleton assets can be decoded for the Creator viewport.",
+      decoderTechnicalDetail(asset, "resolve-asset", "unsupported asset class")
+    )
+  ];
+}
+
+function viewportStateForEntry(
+  entry: CreatorAssetIndexEntry
+): "none" | "viewable" {
+  return isRenderableModelAsset(entry) ? "viewable" : "none";
+}
+
+function isRenderableModelAsset(entry: CreatorAssetIndexEntry): boolean {
+  if (entry.source === "baseGameMap") {
+    return isSupportedBaseGameMeshAsset(entry) || isLikelyBaseGameMeshAsset(entry);
+  }
+
+  return (
+    ["StaticMesh", "SkeletalMesh", "Skeleton", "ModelPreview"].includes(
+      entry.assetClass ?? ""
+    ) || isModelPayloadAsset(entry)
+  );
+}
+
+function isLikelyBaseGameMeshAsset(entry: CreatorAssetIndexEntry): boolean {
+  if (
+    entry.source !== "baseGameMap" ||
+    entry.assetClass !== "CookedUnrealAsset" ||
+    (entry.extension ?? "").toLowerCase() !== ".uasset"
+  ) {
+    return false;
+  }
+
+  const lowerPath = [
+    entry.objectPath,
+    entry.packagePath,
+    entry.relativePath,
+    entry.label
+  ]
+    .filter(Boolean)
+    .join("/")
+    .toLowerCase();
+  const stem = baseGameAssetStem(entry)?.toLowerCase() ?? "";
+
+  return (
+    entry.tags.includes("model_visuals") ||
+    isMeshDirectoryPath(lowerPath) ||
+    stem.startsWith("sm_") ||
+    stem.startsWith("sk_") ||
+    stem.startsWith("skm_")
+  );
+}
+
+function isModelPayloadAsset(entry: CreatorAssetIndexEntry): boolean {
+  return packagePayloadModelFormat(entry) !== null;
+}
+
+function packagePayloadModelFormat(
+  entry: CreatorAssetIndexEntry
+): CreatorMeshExportFormat | null {
+  const format = (entry.extension ?? path.posix.extname(entry.payloadPath ?? ""))
+    .replace(".", "")
+    .toLowerCase();
+  return MODEL_PREVIEW_FORMATS.has(format)
+    ? (format as CreatorMeshExportFormat)
+    : null;
 }
 
 function baseGameCookedPayloadForAsset(
@@ -3030,6 +3991,14 @@ async function isDecoderAvailable(
   }
 
   return decoder.isAvailable ? Boolean(await decoder.isAvailable()) : true;
+}
+
+function decoderSupportsFormat(
+  decoder: BaseGameMeshDecoder,
+  format: CreatorMeshExportFormat,
+  asset: CreatorAssetIndexEntry
+): boolean {
+  return decoder.supportsFormat ? decoder.supportsFormat(format, asset) : true;
 }
 
 function baseGameDecoderProblems(
@@ -3094,7 +4063,7 @@ function decoderTechnicalDetail(
 function preferredBaseGamePreviewFormat(
   asset: CreatorAssetIndexEntry
 ): CreatorMeshExportFormat {
-  return asset.assetClass === "SkeletalMesh" ? "glb" : "obj";
+  return asset.assetClass === "Skeleton" ? "gltf" : "glb";
 }
 
 function dataUrlForModel(data: Buffer, format: CreatorMeshExportFormat): string {
@@ -3112,19 +4081,22 @@ function baseGameMeshFileName(
 
 function meshPreviewRoleForAsset(
   asset: CreatorAssetIndexEntry
-): "staticMesh" | "skeletalMesh" | "unknown" {
+): "staticMesh" | "skeletalMesh" | "skeleton" | "unknown" {
   if (asset.assetClass === "StaticMesh") {
     return "staticMesh";
   }
   if (asset.assetClass === "SkeletalMesh") {
     return "skeletalMesh";
   }
+  if (asset.assetClass === "Skeleton") {
+    return "skeleton";
+  }
   return "unknown";
 }
 
 function meshPreviewRoleForAssetOrUnknown(
   asset: CreatorAssetIndexEntry | null
-): "staticMesh" | "skeletalMesh" | "unknown" {
+): "staticMesh" | "skeletalMesh" | "skeleton" | "unknown" {
   return asset ? meshPreviewRoleForAsset(asset) : "unknown";
 }
 
@@ -3708,7 +4680,7 @@ function defaultEligibility(entry: CreatorAssetIndexEntry): CreatorExportEligibi
         containsBaseGameContent: true,
         requiresUserOwnedSource: false,
         reason:
-          "Base-game mesh export is enabled when CMM can decode and convert the cooked mesh payload."
+          "Base-game model export is enabled when CMM can decode and convert the cooked model payload."
       };
     }
 
@@ -3781,22 +4753,36 @@ async function meshExportPlanBlockReason(
   asset: CreatorAssetIndexEntry,
   output: CreatorMeshExportFormat,
   decoderAvailable: boolean,
-  baseGamePreviewRoot: string | null
+  baseGamePreviewRoot: string | null,
+  decoder: BaseGameMeshDecoder | null,
+  resolveBaseGameMeshProbe?: BaseGameMeshProbeResolver
 ): Promise<string | null> {
   if (asset.source !== "baseGameMap") {
-    return "Only indexed base-game mesh assets can use direct mesh export.";
+    return "Only indexed base-game model assets can use direct mesh export.";
   }
-  if (!isSupportedBaseGameMeshAsset(asset)) {
-    return "Unsupported asset class.";
+  const resolved = await resolveBaseGameRenderableAsset(
+    asset,
+    {
+      baseGamePreviewRoot,
+      baseGameMeshDecoder: decoder,
+      resolveBaseGameMeshProbe
+    },
+    "export"
+  );
+  if (!resolved.asset) {
+    return resolved.probe?.problems?.[0]?.message ?? "Unsupported asset class.";
   }
-  if (decoderAvailable) {
-    return null;
-  }
+  const renderAsset = resolved.asset;
   const cached = baseGamePreviewRoot
-    ? await findCachedBaseGamePreview(asset, baseGamePreviewRoot)
+    ? await findCachedBaseGamePreview(renderAsset, baseGamePreviewRoot)
     : null;
   if (cached && supportedCachedBaseGamePreviewFormat(cached) === output) {
     return null;
+  }
+  if (decoderAvailable && decoder) {
+    return decoderSupportsFormat(decoder, output, renderAsset)
+      ? null
+      : "The configured base-game mesh decoder does not support this output format for this asset.";
   }
   return "No base-game mesh decoder is configured for cooked Unreal mesh conversion.";
 }
@@ -4055,6 +5041,7 @@ function inferAssetClass(
     const fileName = path.posix
       .basename(filePath.replaceAll("\\", "/"))
       .toLowerCase();
+    const fileStem = fileName.replace(/\.[^.]+$/, "");
     if (lowerPath.includes("/textures/") || lowerPath.includes("/texture/")) {
       return "Texture2D";
     }
@@ -4062,24 +5049,33 @@ function inferAssetClass(
       return "Material";
     }
     if (
-      fileName.startsWith("skel_") ||
-      fileName.includes("_skeleton") ||
+      fileStem.startsWith("skel_") ||
+      fileStem.includes("_skeleton") ||
       lowerPath.includes("/skeletons/")
     ) {
       return "Skeleton";
     }
     if (
-      fileName.startsWith("phys_") ||
-      fileName.startsWith("pa_") ||
+      fileStem.startsWith("phys_") ||
+      fileStem.startsWith("pa_") ||
       lowerPath.includes("/physics/") ||
       tags.includes("rig_skeleton_physics")
     ) {
       return "PhysicsAsset";
     }
-    if (lowerPath.includes("/meshes/") || lowerPath.includes("/mesh/")) {
+    if (isAnimationAssetFileName(fileStem) || tags.includes("animation")) {
+      return animationAssetClass(fileStem);
+    }
+    if (fileStem.startsWith("sk_") || fileStem.startsWith("skm_")) {
+      return "SkeletalMesh";
+    }
+    if (fileStem.startsWith("sm_")) {
+      return "StaticMesh";
+    }
+    if (isMeshDirectoryPath(lowerPath)) {
       if (
-        fileName.startsWith("sk_") ||
-        fileName.startsWith("skm_") ||
+        fileStem.startsWith("sk_") ||
+        fileStem.startsWith("skm_") ||
         tags.includes("character_model_animation")
       ) {
         return "SkeletalMesh";
@@ -4087,9 +5083,12 @@ function inferAssetClass(
       return "StaticMesh";
     }
     if (tags.includes("model_visuals")) {
-      return fileName.startsWith("sk_") || fileName.startsWith("skm_")
-        ? "SkeletalMesh"
-        : "StaticMesh";
+      if (fileStem.startsWith("sk_") || fileStem.startsWith("skm_")) {
+        return "SkeletalMesh";
+      }
+      if (fileStem.startsWith("sm_")) {
+        return "StaticMesh";
+      }
     }
     if (tags.includes("animation")) {
       return "AnimSequence";
@@ -4116,6 +5115,41 @@ function inferAssetClass(
   }
 
   return null;
+}
+
+function isAnimationAssetFileName(fileName: string): boolean {
+  return (
+    fileName.endsWith("_bs") ||
+    fileName.includes("_bs_") ||
+    fileName.endsWith("_blendspace") ||
+    fileName.includes("_blendspace_") ||
+    fileName.endsWith("_animblueprint") ||
+    fileName.includes("_animblueprint_") ||
+    fileName.endsWith("_montage") ||
+    fileName.includes("_montage_") ||
+    fileName.endsWith("_anim") ||
+    fileName.includes("_anim_") ||
+    fileName.endsWith("_ctrlrig") ||
+    fileName.includes("_ctrlrig_") ||
+    fileName.startsWith("abp_") ||
+    fileName.startsWith("bs_")
+  );
+}
+
+function animationAssetClass(fileName: string): string {
+  if (fileName.endsWith("_ctrlrig") || fileName.includes("_ctrlrig_")) {
+    return "ControlRig";
+  }
+  return fileName.endsWith("_bs") ||
+    fileName.includes("_bs_") ||
+    fileName.endsWith("_blendspace") ||
+    fileName.includes("_blendspace_")
+    ? "BlendSpace"
+    : "AnimSequence";
+}
+
+function isMeshDirectoryPath(lowerPath: string): boolean {
+  return /(^|\/)[^/]*meshes?[^/]*(\/|$)/.test(lowerPath);
 }
 
 function splitTags(value: string): string[] {
@@ -4176,6 +5210,10 @@ function emptyToNull(value: string | undefined): string | null {
 
 function hashStable(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
+function hashBuffer(value: Buffer): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function workspaceRelativePath(targetPath: string): string {

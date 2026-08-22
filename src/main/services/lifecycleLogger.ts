@@ -59,6 +59,7 @@ function normalizeLogCategory(
     deploymentService: "DEPLOYMENT",
     runtimeManager: "RUNTIME",
     assetRegistryService: "PACKAGE",
+    unrealMappingsService: "RUNTIME",
     security: "SECURITY"
   };
 

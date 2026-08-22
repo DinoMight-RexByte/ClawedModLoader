@@ -8,6 +8,9 @@ import type {
   CreatorAssetTreeNode,
   CreatorExportPlanResult,
   CreatorMeshExportResult,
+  CreatorMeshPackageExportResult,
+  CreatorMappingsDumpProgress,
+  CreatorMappingsDumpResult,
   CreatorModelPreviewResult,
   ModProblem
 } from "../../shared/contracts/app";
@@ -39,8 +42,15 @@ interface CreatorAssetStoreState {
   detail: CreatorAssetDetail | null;
   modelPreview: CreatorModelPreviewResult | null;
   modelError: string | null;
+  visibleAssetIds: string[];
+  visibleModelPreviews: Record<string, CreatorModelPreviewResult>;
+  visibleModelBusyIds: string[];
+  visibleModelErrors: Record<string, string>;
   exportPlan: CreatorExportPlanResult | null;
   meshExport: CreatorMeshExportResult | null;
+  meshPackageExport: CreatorMeshPackageExportResult | null;
+  mappingsProgress: CreatorMappingsDumpProgress | null;
+  mappingsDump: CreatorMappingsDumpResult | null;
   report: CreatorAssetReportResult | null;
   filters: CreatorAssetFilters;
   selectedAssetId: string | null;
@@ -59,8 +69,19 @@ interface CreatorAssetStoreState {
   setDetail(detail: CreatorAssetDetail | null): void;
   setModelPreview(modelPreview: CreatorModelPreviewResult | null): void;
   setModelError(modelError: string | null): void;
+  setVisibleAsset(assetId: string, visible: boolean): void;
+  setVisibleModelPreview(
+    assetId: string,
+    modelPreview: CreatorModelPreviewResult | null
+  ): void;
+  setVisibleModelBusy(assetId: string, busy: boolean): void;
+  setVisibleModelError(assetId: string, error: string | null): void;
+  clearVisibleModels(): void;
   setExportPlan(exportPlan: CreatorExportPlanResult | null): void;
   setMeshExport(meshExport: CreatorMeshExportResult | null): void;
+  setMeshPackageExport(meshPackageExport: CreatorMeshPackageExportResult | null): void;
+  setMappingsProgress(mappingsProgress: CreatorMappingsDumpProgress | null): void;
+  setMappingsDump(mappingsDump: CreatorMappingsDumpResult | null): void;
   setReport(report: CreatorAssetReportResult | null): void;
   setFilters(filters: Partial<CreatorAssetFilters>): void;
   setSelectedAssetId(selectedAssetId: string | null): void;
@@ -78,8 +99,15 @@ export const useCreatorAssetStore = create<CreatorAssetStoreState>((set) => ({
   detail: null,
   modelPreview: null,
   modelError: null,
+  visibleAssetIds: [],
+  visibleModelPreviews: {},
+  visibleModelBusyIds: [],
+  visibleModelErrors: {},
   exportPlan: null,
   meshExport: null,
+  meshPackageExport: null,
+  mappingsProgress: null,
+  mappingsDump: null,
   report: null,
   filters: defaultCreatorAssetFilters,
   selectedAssetId: null,
@@ -120,8 +148,51 @@ export const useCreatorAssetStore = create<CreatorAssetStoreState>((set) => ({
   setDetail: (detail) => set({ detail }),
   setModelPreview: (modelPreview) => set({ modelPreview }),
   setModelError: (modelError) => set({ modelError }),
+  setVisibleAsset: (assetId, visible) =>
+    set((state) => ({
+      visibleAssetIds: visible
+        ? [...new Set([...state.visibleAssetIds, assetId])]
+        : state.visibleAssetIds.filter((id) => id !== assetId),
+      visibleModelPreviews: visible
+        ? state.visibleModelPreviews
+        : omitRecordKey(state.visibleModelPreviews, assetId),
+      visibleModelBusyIds: visible
+        ? state.visibleModelBusyIds
+        : state.visibleModelBusyIds.filter((id) => id !== assetId),
+      visibleModelErrors: visible
+        ? state.visibleModelErrors
+        : omitRecordKey(state.visibleModelErrors, assetId)
+    })),
+  setVisibleModelPreview: (assetId, modelPreview) =>
+    set((state) => ({
+      visibleModelPreviews: modelPreview
+        ? { ...state.visibleModelPreviews, [assetId]: modelPreview }
+        : omitRecordKey(state.visibleModelPreviews, assetId)
+    })),
+  setVisibleModelBusy: (assetId, busy) =>
+    set((state) => ({
+      visibleModelBusyIds: busy
+        ? [...new Set([...state.visibleModelBusyIds, assetId])]
+        : state.visibleModelBusyIds.filter((id) => id !== assetId)
+    })),
+  setVisibleModelError: (assetId, error) =>
+    set((state) => ({
+      visibleModelErrors: error
+        ? { ...state.visibleModelErrors, [assetId]: error }
+        : omitRecordKey(state.visibleModelErrors, assetId)
+    })),
+  clearVisibleModels: () =>
+    set({
+      visibleAssetIds: [],
+      visibleModelPreviews: {},
+      visibleModelBusyIds: [],
+      visibleModelErrors: {}
+    }),
   setExportPlan: (exportPlan) => set({ exportPlan }),
   setMeshExport: (meshExport) => set({ meshExport }),
+  setMeshPackageExport: (meshPackageExport) => set({ meshPackageExport }),
+  setMappingsProgress: (mappingsProgress) => set({ mappingsProgress }),
+  setMappingsDump: (mappingsDump) => set({ mappingsDump }),
   setReport: (report) => set({ report }),
   setFilters: (filters) =>
     set((state) => ({
@@ -138,4 +209,10 @@ export const useCreatorAssetStore = create<CreatorAssetStoreState>((set) => ({
 
 export function treeParentKey(parentId: string | null): string {
   return parentId ?? rootTreeParentId;
+}
+
+function omitRecordKey<T>(record: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...record };
+  delete next[key];
+  return next;
 }

@@ -62,6 +62,25 @@ function runtimeSourceLabel(runtime: RuntimeSnapshot | null): string {
     : "a user-selected runtime";
 }
 
+function runtimeStatusLabel(runtime: RuntimeSnapshot | null): string {
+  switch (runtime?.status) {
+    case "missing":
+      return "Missing";
+    case "invalid":
+      return "Invalid";
+    case "unvalidated":
+      return "Unvalidated";
+    case "validated":
+      return "Validated";
+    case "incompatible":
+      return "Incompatible";
+    case "configured":
+      return "Configured";
+    default:
+      return "Checking";
+  }
+}
+
 export function FirstRunOnboarding(): ReactElement | null {
   const [visible, setVisible] = useState(
     () => localStorage.getItem(onboardingStorageKey) !== "true"
@@ -255,7 +274,7 @@ export function FirstRunOnboarding(): ReactElement | null {
               <div>
                 <h3 className="text-lg font-semibold">Configure Runtime</h3>
                 <p className="mt-1 text-sm text-app-muted">
-                  Runtime status: {runtime?.status ?? "Checking"}
+                  Runtime status: {runtimeStatusLabel(runtime)}
                 </p>
               </div>
               <div className={`rounded-md border p-3 ${statusClass(stepDone.runtime)}`}>

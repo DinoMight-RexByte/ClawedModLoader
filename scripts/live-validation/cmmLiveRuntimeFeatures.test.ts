@@ -60,7 +60,7 @@ const liveValidationEnabled =
   process.env.CMM_LIVE_CLAWED_RUNTIME_FEATURES === "1";
 const defaultClawedInstallPath =
   "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Clawed";
-const bundledUe4ssVersion = "ue4ss-experimental-latest-1c1a1497";
+const bundledUe4ssVersion = "ue4ss-v3.0.1-lts";
 const probeModId = "CMMRuntimeFeatureProbe";
 const looseTextureModId = "CMMLooseTextureAsset";
 const bpLogicModId = "CMMBPLogicConfigs";
@@ -270,11 +270,9 @@ describe.runIf(liveValidationEnabled)("live CMM runtime feature validation", () 
       bundledUe4ssRuntimePath: customRuntimePath,
       bundledUe4ssVersion,
       bundledUe4ssCompatibility: {
-        status: "validated",
+        status: "unvalidated",
         message:
-          "Packaged UE4SS experimental-latest commit 1c1a1497 loads Lua mods and honors generated mods.txt Lua startup order on Clawed build 24719259.",
-        technicalDetail:
-          "This runtime copy only changes BPModLoaderMod/load_order.txt for live LogicMods validation; binaries match the packaged validated runtime."
+          "Packaged UE4SS v3.0.1 LTS has not been validated as the current bundled default for this Clawed build."
       }
     });
     const deploymentService = new LocalDeploymentService(

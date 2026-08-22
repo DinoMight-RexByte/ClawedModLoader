@@ -425,17 +425,17 @@ async function completeFirstRunOnboarding(
   const runtimeState = await waitForElectronWindowState(
     page,
     (state) =>
-      state.cmm.runtimeStatus === "configured" &&
-      state.cmm.runtimeReleaseValidation === "VALIDATED",
+      state.cmm.runtimeStatus === "unvalidated" &&
+      state.cmm.runtimeReleaseValidation === "UNVALIDATED",
     120_000,
-    "Timed out waiting for first-run packaged runtime setup to configure a validated runtime"
+    "Timed out waiting for first-run packaged runtime setup to configure an unvalidated runtime"
   );
   await writeElectronWindowEvidence(
     page,
     evidenceRoot,
     "05-onboarding-runtime-configured"
   );
-  expect(runtimeState.cmm.runtimeStatus).toBe("configured");
+  expect(runtimeState.cmm.runtimeStatus).toBe("unvalidated");
 
   await page.getByRole("button", { name: "Continue" }).click();
   await page

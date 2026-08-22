@@ -19,6 +19,10 @@ import type {
   CreatorExportPlanResult,
   CreatorMeshExportRequest,
   CreatorMeshExportResult,
+  CreatorMeshPackageExportRequest,
+  CreatorMeshPackageExportResult,
+  CreatorMappingsDumpProgress,
+  CreatorMappingsDumpResult,
   CreatorModelPreviewRequest,
   CreatorModelPreviewResult,
   CreatorPreviewLookupRequest,
@@ -66,6 +70,8 @@ import type {
   ProfileIdRequest,
   ProfileListSnapshot,
   ProfileMissingModsSnapshot,
+  RecordUe4ssRuntimeValidationRequest,
+  RecordUe4ssRuntimeValidationResult,
   RenameProfileRequest,
   RendererErrorReportRequest,
   RendererErrorReportResult,
@@ -74,7 +80,8 @@ import type {
   RuntimeSnapshot,
   SetModOrderPositionRequest,
   SetModEnabledRequest,
-  ServiceStatus
+  ServiceStatus,
+  ValidatePackagedRuntimeResult
 } from "./app";
 
 export type CoreServiceId =
@@ -82,10 +89,12 @@ export type CoreServiceId =
   | "processSupervisor"
   | "launchService"
   | "deploymentService"
+  | "packagedRuntimeValidationService"
   | "runtimeManager"
   | "modLibraryService"
   | "externalImportService"
   | "assetRegistryService"
+  | "unrealMappingsService"
   | "profileService"
   | "loadOrderService"
   | "packageService"
@@ -117,12 +126,21 @@ export interface LaunchServiceContract extends ServiceHealthReporter {
 }
 
 export interface RuntimeManagerContract extends ServiceHealthReporter {
-  getRuntimeSnapshot(currentSteamBuildId?: string | null): Promise<RuntimeSnapshot>;
+  getRuntimeSnapshot(
+    currentSteamBuildId?: string | null,
+    currentFingerprintSha256?: string | null
+  ): Promise<RuntimeSnapshot>;
   ensureBundledUe4ssRuntime(): Promise<ImportUe4ssRuntimeResult | null>;
   installBundledUe4ssRuntime(): Promise<ImportUe4ssRuntimeResult>;
   importUe4ssRuntime(
     request: ImportUe4ssRuntimeRequest
   ): Promise<ImportUe4ssRuntimeResult>;
+  recordUe4ssRuntimeValidation(
+    request: RecordUe4ssRuntimeValidationRequest
+  ): Promise<RecordUe4ssRuntimeValidationResult>;
+  recordBundledUe4ssRuntimeValidation(
+    request: RecordUe4ssRuntimeValidationRequest
+  ): Promise<RecordUe4ssRuntimeValidationResult>;
 }
 
 export interface DeploymentServiceContract extends ServiceHealthReporter {
@@ -130,9 +148,26 @@ export interface DeploymentServiceContract extends ServiceHealthReporter {
   prepareModdedDeployment(
     discovery: GameDiscovery
   ): Promise<DeploymentOperationResult>;
+  prepareRuntimeValidationDeployment(
+    discovery: GameDiscovery
+  ): Promise<DeploymentOperationResult>;
+  prepareUnrealMappingsDumpDeployment(
+    discovery: GameDiscovery
+  ): Promise<DeploymentOperationResult>;
   prepareVanillaDeployment(
     discovery: GameDiscovery
   ): Promise<DeploymentOperationResult>;
+}
+
+export interface PackagedRuntimeValidationServiceContract
+  extends ServiceHealthReporter {
+  validate(discovery: GameDiscovery): Promise<ValidatePackagedRuntimeResult>;
+}
+
+export interface UnrealMappingsServiceContract extends ServiceHealthReporter {
+  generateMappings(
+    onProgress?: (progress: CreatorMappingsDumpProgress) => void
+  ): Promise<CreatorMappingsDumpResult>;
 }
 
 export interface ModLibraryServiceContract extends ServiceHealthReporter {
@@ -181,6 +216,9 @@ export interface AssetRegistryServiceContract extends ServiceHealthReporter {
     request: CreatorExportPlanRequest
   ): Promise<CreatorExportPlanResult>;
   exportMesh(request: CreatorMeshExportRequest): Promise<CreatorMeshExportResult>;
+  exportMeshPackage(
+    request: CreatorMeshPackageExportRequest
+  ): Promise<CreatorMeshPackageExportResult>;
   getReport(
     request: CreatorAssetReportRequest
   ): Promise<CreatorAssetReportResult>;
@@ -263,6 +301,7 @@ export interface SettingsServiceContract {
   getSettings(): Promise<AppSettings>;
   setManualGameDirectory(gameDirectory: string | null): Promise<AppSettings>;
   setAutoUpdatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
+  setAutoValidatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
 }
 
 export interface CoreServices {
@@ -270,6 +309,8 @@ export interface CoreServices {
   processSupervisor: ProcessSupervisorContract;
   launchService: LaunchServiceContract;
   deploymentService: DeploymentServiceContract;
+  packagedRuntimeValidationService: PackagedRuntimeValidationServiceContract;
+  unrealMappingsService: UnrealMappingsServiceContract;
   runtimeManager: RuntimeManagerContract;
   modLibraryService: ModLibraryServiceContract;
   externalImportService: ExternalImportServiceContract;

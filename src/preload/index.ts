@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 
+import { CreatorMappingsDumpProgressSchema } from "../shared/contracts/app";
 import {
+  IPC_CHANNELS,
   ipcContracts,
   type CmmApi,
   type IpcContract
@@ -30,6 +32,8 @@ const api: CmmApi = {
   getAppSettings: () => invoke(ipcContracts.getAppSettings, {}),
   setAutoUpdatePackagedRuntime: (request) =>
     invoke(ipcContracts.setAutoUpdatePackagedRuntime, request),
+  setAutoValidatePackagedRuntime: (request) =>
+    invoke(ipcContracts.setAutoValidatePackagedRuntime, request),
   getLifecycleSnapshot: () => invoke(ipcContracts.getLifecycleSnapshot, {}),
   listInstalledMods: () => invoke(ipcContracts.listInstalledMods, {}),
   importModPackage: (request) => invoke(ipcContracts.importModPackage, request),
@@ -83,6 +87,8 @@ const api: CmmApi = {
   getRuntimeSnapshot: () => invoke(ipcContracts.getRuntimeSnapshot, {}),
   installBundledUe4ssRuntime: () =>
     invoke(ipcContracts.installBundledUe4ssRuntime, {}),
+  validatePackagedRuntime: () =>
+    invoke(ipcContracts.validatePackagedRuntime, {}),
   importUe4ssRuntime: (request) =>
     invoke(ipcContracts.importUe4ssRuntime, request),
   chooseAndImportUe4ssRuntime: () =>
@@ -105,6 +111,19 @@ const api: CmmApi = {
     invoke(ipcContracts.getCreatorExportPlan, request),
   chooseAndExportCreatorMesh: (request) =>
     invoke(ipcContracts.chooseAndExportCreatorMesh, request),
+  chooseAndExportCreatorMeshPackage: (request) =>
+    invoke(ipcContracts.chooseAndExportCreatorMeshPackage, request),
+  generateCreatorMappings: () =>
+    invoke(ipcContracts.generateCreatorMappings, {}),
+  onCreatorMappingsProgress: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, raw: unknown) => {
+      listener(CreatorMappingsDumpProgressSchema.parse(raw));
+    };
+    ipcRenderer.on(IPC_CHANNELS.creatorMappingsProgress, handler);
+    return () => {
+      ipcRenderer.off(IPC_CHANNELS.creatorMappingsProgress, handler);
+    };
+  },
   getCreatorAssetReport: (request) =>
     invoke(ipcContracts.getCreatorAssetReport, request),
   restoreCmmChanges: () => invoke(ipcContracts.restoreCmmChanges, {}),

@@ -9,6 +9,15 @@ test-results/
 *.log
 .DS_Store
 
+tools/unreal-decoder/**/bin/
+tools/unreal-decoder/**/obj/
+assets/unreal-decoder/CmmUnrealDecoder.exe
+assets/unreal-decoder/*.dll
+assets/unreal-decoder/*.json
+assets/unreal-decoder/*.pdb
+/oodle-data-shared.dll
+/zlib-ng2.dll
+
 # Private planning, AI context, and internal documentation
 /docs/
 /prompts/

@@ -1,5 +1,6 @@
 import {
   CLAWED_STEAM_APP_ID,
+  type DeploymentOperationResult,
   type GameDiscovery,
   type LaunchCommandKind,
   type LaunchCommandRequest,
@@ -10,9 +11,14 @@ import {
 import type {
   DeploymentServiceContract,
   GameLocatorContract,
-  LaunchServiceContract
+  LaunchServiceContract,
+  SettingsServiceContract
 } from "../../shared/contracts/services";
 import type { LifecycleLogger } from "./lifecycleLogger";
+import type {
+  PackagedRuntimeValidationResult,
+  PackagedRuntimeValidationService
+} from "./packagedRuntimeValidationService";
 import type { ProcessPlatform } from "./processPlatform";
 import type { WindowsProcessSupervisor } from "./processSupervisor";
 
@@ -25,6 +31,11 @@ export interface LaunchServiceOptions {
 
 const forceCloseWarning =
   "Clawed isn't responding. Forcing it closed may interrupt a save operation.";
+
+type RuntimeValidationStep =
+  | { status: "skip" }
+  | { status: "validated" }
+  | { status: "return"; result: LaunchCommandResult };
 
 export class SteamLaunchService implements LaunchServiceContract {
   private operationInFlight = false;
@@ -41,7 +52,9 @@ export class SteamLaunchService implements LaunchServiceContract {
     private readonly platform: ProcessPlatform,
     private readonly logger: LifecycleLogger,
     options?: LaunchServiceOptions,
-    private readonly deploymentService?: DeploymentServiceContract
+    private readonly deploymentService?: DeploymentServiceContract,
+    private readonly settingsService?: SettingsServiceContract,
+    private readonly packagedRuntimeValidationService?: PackagedRuntimeValidationService
   ) {
     this.launchDetectTimeoutMs = options?.launchDetectTimeoutMs ?? 5_000;
     this.gracefulShutdownTimeoutMs =
@@ -86,9 +99,9 @@ export class SteamLaunchService implements LaunchServiceContract {
     try {
       const result =
         request.kind === "launchModded"
-          ? await this.launch("MODDED", request.kind)
+          ? await this.launch("MODDED", request)
           : request.kind === "launchVanilla"
-            ? await this.launch("VANILLA", request.kind)
+            ? await this.launch("VANILLA", request)
             : await this.restart(request.forceCloseConfirmed === true);
 
       return this.remember(result);
@@ -99,8 +112,9 @@ export class SteamLaunchService implements LaunchServiceContract {
 
   private async launch(
     launchMode: LaunchMode,
-    kind: LaunchCommandKind
+    request: LaunchCommandRequest
   ): Promise<LaunchCommandResult> {
+    const kind = request.kind;
     const discovery = await this.gameLocator.rescan();
     const blocked = this.blockIfNotReady(discovery, kind, launchMode);
     if (blocked) {
@@ -129,8 +143,21 @@ export class SteamLaunchService implements LaunchServiceContract {
       };
     }
 
-    const deployment = await this.prepareDeployment(discovery, launchMode);
-    if (deployment) {
+    let deployment = await this.prepareDeployment(discovery, launchMode);
+    const validationStep = await this.handlePackagedRuntimeValidation(
+      discovery,
+      request,
+      launchMode,
+      deployment
+    );
+    if (validationStep.status === "return") {
+      return validationStep.result;
+    }
+    if (validationStep.status === "validated") {
+      deployment = await this.prepareDeployment(discovery, launchMode);
+    }
+
+    if (deployment && deployment.status !== "ok") {
       return {
         kind,
         launchMode,
@@ -144,6 +171,9 @@ export class SteamLaunchService implements LaunchServiceContract {
           deployment.problems[0]?.message ??
           "CMM could not prepare the requested launch state.",
         nextStep: deployment.problems[0]?.technicalDetail,
+        canOpenRuntimeValidationFlow:
+          launchMode === "MODDED" &&
+          canOpenRuntimeValidationFlow(deployment),
         occurredAt: new Date().toISOString()
       };
     }
@@ -217,7 +247,7 @@ export class SteamLaunchService implements LaunchServiceContract {
 
     if (!processInfo) {
       this.processSupervisor.markStopped();
-      return this.launch(this.currentLaunchMode, "restartGame");
+      return this.launch(this.currentLaunchMode, { kind: "restartGame" });
     }
 
     if (!forceCloseConfirmed) {
@@ -229,7 +259,7 @@ export class SteamLaunchService implements LaunchServiceContract {
       );
 
       if (exited) {
-        return this.launch(this.currentLaunchMode, "restartGame");
+        return this.launch(this.currentLaunchMode, { kind: "restartGame" });
       }
 
       return {
@@ -266,7 +296,7 @@ export class SteamLaunchService implements LaunchServiceContract {
       };
     }
 
-    return this.launch(this.currentLaunchMode, "restartGame");
+    return this.launch(this.currentLaunchMode, { kind: "restartGame" });
   }
 
   private blockIfNotReady(
@@ -305,11 +335,112 @@ export class SteamLaunchService implements LaunchServiceContract {
         ? await this.deploymentService.prepareModdedDeployment(discovery)
         : await this.deploymentService.prepareVanillaDeployment(discovery);
 
-    return result.status === "ok" ? null : result;
+    return result;
+  }
+
+  private async handlePackagedRuntimeValidation(
+    discovery: GameDiscovery,
+    request: LaunchCommandRequest,
+    launchMode: LaunchMode,
+    deployment: DeploymentOperationResult | null
+  ): Promise<RuntimeValidationStep> {
+    const kind = request.kind;
+    if (
+      request.kind !== "launchModded" ||
+      launchMode !== "MODDED" ||
+      !deployment ||
+      deployment.status === "ok" ||
+      !canOpenRuntimeValidationFlow(deployment)
+    ) {
+      return { status: "skip" };
+    }
+
+    const settings = await this.settingsService?.getSettings();
+    const shouldValidate =
+      settings?.autoValidatePackagedRuntime === true ||
+      request.runtimeValidationConfirmed === true;
+
+    if (!shouldValidate) {
+      return { status: "skip" };
+    }
+
+    if (request.alwaysValidateRuntime === true && this.settingsService) {
+      await this.settingsService.setAutoValidatePackagedRuntime(true);
+    }
+
+    if (!this.packagedRuntimeValidationService) {
+      return {
+        status: "return",
+        result: {
+          kind,
+          launchMode,
+          lifecycleState: this.processSupervisor.snapshot().lifecycleState,
+          status: "blocked",
+          title: "Packaged runtime validation is unavailable",
+          message: "CMM cannot validate the packaged runtime from this build.",
+          nextStep: "Open Diagnostics or validate the runtime from a supported build.",
+          occurredAt: new Date().toISOString()
+        }
+      };
+    }
+
+    const validation =
+      await this.packagedRuntimeValidationService.validate(discovery);
+    if (validation.status === "validated") {
+      return { status: "validated" };
+    }
+
+    return {
+      status: "return",
+      result: {
+        kind,
+        launchMode,
+        lifecycleState: this.processSupervisor.snapshot().lifecycleState,
+        status: "blocked",
+        title:
+          validation.status === "incompatible"
+            ? "Packaged runtime is incompatible"
+            : "Packaged runtime validation failed",
+        message: validationMessage(validation),
+        nextStep:
+          validation.evidencePath ??
+          validation.problems[0]?.technicalDetail ??
+          "Open Diagnostics or leave automatic packaged runtime validation off in Settings.",
+        canOpenRuntimeValidationFlow: true,
+        occurredAt: new Date().toISOString()
+      }
+    };
   }
 
   private remember(result: LaunchCommandResult): LaunchCommandResult {
     this.lastCommand = result;
     return result;
   }
+}
+
+function canOpenRuntimeValidationFlow(
+  deployment: DeploymentOperationResult
+): boolean {
+  return (
+    (deployment.state === "runtimeUnvalidated" ||
+      deployment.state === "runtimeIncompatible") &&
+    deployment.problems.some((problem) =>
+      problem.code.startsWith("UE4SS_BUNDLED_RUNTIME_")
+    )
+  );
+}
+
+function validationMessage(
+  validation: PackagedRuntimeValidationResult
+): string {
+  const firstProblem = validation.problems[0];
+  if (firstProblem) {
+    return firstProblem.message;
+  }
+
+  if (validation.status === "incompatible") {
+    return "The packaged UE4SS runtime did not pass validation for this Clawed build.";
+  }
+
+  return "CMM could not complete packaged runtime validation.";
 }

@@ -2,9 +2,11 @@ import { dialog, ipcMain } from "electron";
 import { ZodError } from "zod";
 
 import {
+  IPC_CHANNELS,
   ipcContracts,
   type IpcContract
 } from "../../shared/contracts/ipc";
+import { CreatorMappingsDumpProgressSchema } from "../../shared/contracts/app";
 import type { CoreServices } from "../../shared/contracts/services";
 
 function toUserSafeError(error: unknown): Error {
@@ -81,6 +83,10 @@ export function registerIpcHandlers(services: CoreServices): void {
 
   registerHandler(ipcContracts.setAutoUpdatePackagedRuntime, (request) =>
     services.settingsService.setAutoUpdatePackagedRuntime(request.enabled)
+  );
+
+  registerHandler(ipcContracts.setAutoValidatePackagedRuntime, (request) =>
+    services.settingsService.setAutoValidatePackagedRuntime(request.enabled)
   );
 
   registerHandler(ipcContracts.getLifecycleSnapshot, async () => {
@@ -348,12 +354,18 @@ export function registerIpcHandlers(services: CoreServices): void {
     return services.deploymentService.prepareVanillaDeployment(discovery);
   });
 
-  registerHandler(ipcContracts.getRuntimeSnapshot, () =>
-    services.runtimeManager.getRuntimeSnapshot()
+  registerHandler(ipcContracts.getRuntimeSnapshot, async () =>
+    (await services.diagnosticsService.getDiagnosticsSummary()).runtime
   );
 
   registerHandler(ipcContracts.installBundledUe4ssRuntime, () =>
     services.runtimeManager.installBundledUe4ssRuntime()
+  );
+
+  registerHandler(ipcContracts.validatePackagedRuntime, async () =>
+    services.packagedRuntimeValidationService.validate(
+      await services.gameLocator.rescan()
+    )
   );
 
   registerHandler(ipcContracts.importUe4ssRuntime, (request) =>
@@ -449,6 +461,57 @@ export function registerIpcHandlers(services: CoreServices): void {
       destinationPath: result.filePath
     });
   });
+
+  registerHandler(ipcContracts.chooseAndExportCreatorMeshPackage, async (request) => {
+    const result = await dialog.showSaveDialog({
+      title: "Export visible creator models",
+      defaultPath: "creator-visible-models.clawedmod",
+      filters: [{ name: "Clawed Mod Package", extensions: ["clawedmod"] }]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return {
+        status: "cancelled" as const,
+        destinationPath: null,
+        bytesWritten: null,
+        itemCount: request.assetIds.length,
+        exportedCount: 0,
+        items: [],
+        problems: [
+          {
+            severity: "info" as const,
+            code: "CREATOR_MESH_PACKAGE_EXPORT_CANCELLED",
+            message: "No creator model package path was selected."
+          }
+        ]
+      };
+    }
+
+    return services.assetRegistryService.exportMeshPackage({
+      assetIds: request.assetIds,
+      destinationPath: result.filePath
+    });
+  });
+
+  ipcMain.handle(
+    ipcContracts.generateCreatorMappings.channel,
+    async (event, rawRequest: unknown) => {
+      try {
+        ipcContracts.generateCreatorMappings.requestSchema.parse(rawRequest);
+        const response = await services.unrealMappingsService.generateMappings(
+          (progress) => {
+            event.sender.send(
+              IPC_CHANNELS.creatorMappingsProgress,
+              CreatorMappingsDumpProgressSchema.parse(progress)
+            );
+          }
+        );
+        return ipcContracts.generateCreatorMappings.responseSchema.parse(response);
+      } catch (error) {
+        throw toUserSafeError(error);
+      }
+    }
+  );
 
   registerHandler(ipcContracts.getCreatorAssetReport, (request) =>
     services.assetRegistryService.getReport(request)

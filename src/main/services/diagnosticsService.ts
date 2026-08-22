@@ -79,6 +79,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       enabledMods: modLibrary.totals.enabled,
       profileValidity: validation.validity,
       deploymentState: deployment.state,
+      runtime: deployment.runtime,
       conflicts: {
         count: errorCount + warningCount,
         severity:
@@ -115,13 +116,15 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       { mode: "quick" }
     );
     const runtime = await this.dependencies.runtimeManager.getRuntimeSnapshot(
-      gameFingerprint.steamBuildId
+      gameFingerprint.steamBuildId,
+      gameFingerprint.fingerprintSha256
     );
     const services = [
       this.dependencies.gameLocator.getStatus(),
       this.dependencies.processSupervisor.getStatus(),
       this.dependencies.launchService.getStatus(),
       this.dependencies.deploymentService.getStatus(),
+      this.dependencies.packagedRuntimeValidationService.getStatus(),
       this.dependencies.runtimeManager.getStatus(),
       this.dependencies.modLibraryService.getStatus(),
       this.dependencies.externalImportService.getStatus(),
@@ -364,6 +367,13 @@ function formatDiagnosticReport(summary: DiagnosticsSummary): string {
         : summary.runtime.ue4ss
           ? "user"
           : "none"
+    }`,
+    `Runtime validation: ${summary.runtime.ue4ss?.releaseValidation ?? "none"}`,
+    `Runtime validated build: ${
+      summary.runtime.ue4ss?.validation?.steamBuildId ?? "none"
+    }`,
+    `Runtime validation evidence: ${
+      summary.runtime.ue4ss?.validation?.evidencePath ?? "none"
     }`,
     `Active profile: ${summary.activeProfile.name}`,
     `Profile validity: ${summary.profileValidity}`,

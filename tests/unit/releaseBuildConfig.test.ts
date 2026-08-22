@@ -15,6 +15,7 @@ describe("release build config", () => {
       "package.json",
       "assets/branding",
       "assets/runtime",
+      "assets/unreal-decoder",
       ".codex/clawed-game-file-map/20260814-current"
     ]);
 
@@ -35,12 +36,19 @@ describe("release build config", () => {
     }
 
     expect(build.extraResources).toContainEqual({
+      from: "assets/unreal-decoder",
+      to: "unreal-decoder",
+      filter: ["**/*", "!*.pdb"]
+    });
+    expect(build.extraResources).toContainEqual({
       from: ".codex/clawed-game-file-map/20260814-current",
       to: "clawed-game-file-map/20260814-current"
     });
   });
 
   it("keeps the official launch mod bundle as an explicit packaging step", () => {
+    expect(packageJson.scripts.package).toContain("npm run build:unreal-decoder");
+    expect(packageJson.scripts.dist).toContain("npm run build:unreal-decoder");
     expect(packageJson.scripts["package:official-launch-mods"]).toBe(
       "node scripts/createOfficialLaunchBundle.mjs"
     );
