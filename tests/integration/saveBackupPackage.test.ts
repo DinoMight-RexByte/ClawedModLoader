@@ -31,7 +31,7 @@ import {
 import type { StorageServiceContract } from "../../src/shared/contracts/services";
 
 const execFileAsync = promisify(execFile);
-const modId = "PlayerNamesFix";
+const modId = "SaveBackupRotator";
 
 class FakeStorageService implements StorageServiceContract {
   constructor(private readonly layout: AppStorageLayout) {}
@@ -50,20 +50,20 @@ afterEach(async () => {
   }
 });
 
-describe("PlayerNamesFix package", () => {
+describe("SaveBackupRotator package", () => {
   it("generates and deploys through the normal UE4SS package flow", async () => {
-    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-name-repair-"));
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-save-backup-"));
     const outputDir = path.join(tempRoot, "prototype-mods");
     await execFileAsync(
       process.execPath,
-      [path.resolve("scripts", "createPlayerNameRepairPackage.mjs")],
+      [path.resolve("scripts", "createSaveBackupPackage.mjs")],
       {
         cwd: path.resolve("."),
         env: {
           ...process.env,
           CMM_CLAWED_STEAM_BUILD_ID: "test-build",
-          CMM_PLAYER_NAME_REPAIR_OUTPUT_DIR: outputDir,
-          CMM_PLAYER_NAME_REPAIR_SKIP_UNPACKED: "1"
+          CMM_SAVE_BACKUP_OUTPUT_DIR: outputDir,
+          CMM_SAVE_BACKUP_SKIP_UNPACKED: "1"
         }
       }
     );
@@ -94,21 +94,19 @@ describe("PlayerNamesFix package", () => {
       }
     });
     expect(parsed.hasChecksums).toBe(true);
-    expect(parsed.manifest.version).toBe("0.1.1-prototype.20260824");
-    expect(lua).toContain("[PlayerNamesFix]");
-    expect(lua).toContain("SetPlayerName");
-    expect(lua).toContain("PlayerNamePrivate");
-    expect(lua).toContain("AdvancedSteamFriendsLibrary");
-    expect(lua).toContain("local_online_name");
-    expect(lua).toContain("local_name_cache");
-    expect(lua).toContain("UEHelpers.GetPlayerController");
-    expect(lua).toContain("PlayerController_ServerChangeName");
-    expect(lua).toContain("cmm_repair_names");
-    expect(lua).toContain("Player Name");
-    expect(lua).not.toContain("io.open");
-    expect(readme).toContain("Does not read Steam account files");
-    expect(readme).toContain("local host player");
-    expect(readme).toContain("death-time repair");
+    expect(lua).toContain("[SaveBackupRotator]");
+    expect(lua).toContain("max_snapshots = 3");
+    expect(lua).toContain("SaveGameToSlot");
+    expect(lua).toContain("EMSFunctionLibrary:SaveCustom");
+    expect(lua).toContain("BP_SaveGameManager");
+    expect(lua).toContain("cmm_backup_saves");
+    expect(lua).toContain("SaveBackups");
+    expect(lua).toContain("backup-manifest.tsv");
+    expect(lua).toContain("io.popen");
+    expect(lua).not.toContain("powershell");
+    expect(lua).not.toContain("Start-Process");
+    expect(readme).toContain("latest three backup snapshots");
+    expect(readme).toContain("Does not delete, rename, overwrite, or edit files in the active `SaveGames` folder.");
 
     const storageService = new FakeStorageService(createStorageLayout(tempRoot));
     const modLibraryService = new LocalModLibraryService(
@@ -183,8 +181,8 @@ describe("PlayerNamesFix package", () => {
 
     expect(deployment.status).toBe("ok");
     expect(deployment.manifest?.adapterId).toBe("ue4ss");
-    expect(deployedLua).toContain("repair_wait");
-    expect(deployedLua).toContain("local_online_name");
+    expect(deployedLua).toContain("backup_created");
+    expect(deployedLua).toContain("prune_entry");
     expect(modsTxt).toContain(`${modId} : 1`);
   });
 });

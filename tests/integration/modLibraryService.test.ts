@@ -97,6 +97,7 @@ describe("local mod library service", () => {
     expect(result.status).toBe("installed");
     expect(snapshot.totals.installed).toBe(1);
     expect(snapshot.mods[0].name).toBe("Core Framework");
+    expect(snapshot.mods[0].packageIdentityId).toBe("cmm:test:core-framework");
     expect(snapshot.mods[0].enabled).toBe(false);
     expect(snapshot.mods[0].hasReadme).toBe(true);
 
@@ -128,11 +129,13 @@ describe("local mod library service", () => {
 
   it("blocks same-version different-hash duplicates", async () => {
     const { root, service } = await makeLibrary();
-    const firstPackage = await fixture(root, "core-a.clawedmod");
+    const firstPackage = await fixture(root, "core-a.clawedmod", {
+      packageIdentity: undefined
+    });
     const secondPackage = await fixture(
       root,
       "core-b.clawedmod",
-      undefined,
+      { packageIdentity: undefined },
       "different bytes"
     );
     await service.importModPackage({ packagePath: firstPackage });
@@ -144,6 +147,53 @@ describe("local mod library service", () => {
     expect(duplicate.status).toBe("duplicateDifferentHash");
     expect(duplicate.problems[0].code).toBe("DUPLICATE_VERSION_DIFFERENT_HASH");
     expect((await service.listInstalledMods()).totals.installed).toBe(1);
+  });
+
+  it("requires confirmation before replacing packages with the same package identity", async () => {
+    const { root, service } = await makeLibrary();
+    const packageIdentity = {
+      schemaVersion: 1 as const,
+      id: "cmm:test:stable-core",
+      source: "cmmGenerated" as const
+    };
+    const firstPackage = await fixture(root, "trusted-core.clawedmod", {
+      id: "trusted-core",
+      name: "Trusted Core",
+      version: "1.0.0",
+      packageIdentity
+    });
+    const secondPackage = await fixture(root, "renamed-core.clawedmod", {
+      id: "renamed-core",
+      name: "Renamed Core",
+      version: "2.0.0",
+      packageIdentity
+    });
+    await service.importModPackage({ packagePath: firstPackage });
+
+    const pending = await service.importModPackage({ packagePath: secondPackage });
+
+    expect(pending.status).toBe("needsReplacementConfirmation");
+    expect(pending.packageIdentityId).toBe(packageIdentity.id);
+    expect(pending.replacementCandidates).toHaveLength(1);
+    expect((await service.listInstalledMods()).mods.map((mod) => mod.id)).toEqual([
+      "trusted-core"
+    ]);
+
+    const replaced = await service.importModPackage({
+      packagePath: secondPackage,
+      replacement: {
+        action: "replaceMatchingIdentity",
+        packageIdentityId: packageIdentity.id
+      }
+    });
+
+    expect(replaced.status).toBe("installed");
+    expect(replaced.problems.map((problem) => problem.code)).toContain(
+      "PACKAGE_IDENTITY_REPLACED"
+    );
+    expect((await service.listInstalledMods()).mods.map((mod) => mod.id)).toEqual([
+      "renamed-core"
+    ]);
   });
 
   it("safely uninstalls only the canonical library package", async () => {

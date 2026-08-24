@@ -144,7 +144,7 @@ export interface RuntimeManagerContract extends ServiceHealthReporter {
 }
 
 export interface DeploymentServiceContract extends ServiceHealthReporter {
-  getSnapshot(): Promise<DeploymentSnapshot>;
+  getSnapshot(discovery?: GameDiscovery): Promise<DeploymentSnapshot>;
   prepareModdedDeployment(
     discovery: GameDiscovery
   ): Promise<DeploymentOperationResult>;

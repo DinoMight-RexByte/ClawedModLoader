@@ -1,6 +1,7 @@
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
+import { generatedPackageIdentity } from "./clawedBuildMetadata.mjs";
 
 const modId = "SafeInputSmoke";
 const message = "CMM SAFE INPUT SMOKE ACTIVE";
@@ -81,7 +82,8 @@ const manifest = {
   dependencies: [],
   conflicts: [],
   loadAfter: [],
-  loadBefore: []
+  loadBefore: [],
+  packageIdentity: generatedPackageIdentity(modId)
 };
 
 async function exists(targetPath) {

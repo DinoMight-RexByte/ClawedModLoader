@@ -6,6 +6,8 @@ import {
   CreatorMappingsDumpResultSchema,
   CreatorMeshExportDialogRequestSchema,
   ExternalModInspectionResultSchema,
+  ImportModPackageRequestSchema,
+  ImportModPackageResultSchema,
   LaunchCommandResultSchema,
   LaunchCommandRequestSchema,
   PlaySnapshotSchema,
@@ -149,6 +151,30 @@ describe("IPC contracts", () => {
     });
 
     expect(parsed.format).toBe("rawPak");
+  });
+
+  it("validates identity replacement import requests and results", () => {
+    expect(
+      ImportModPackageRequestSchema.parse({
+        packagePath: "C:\\Mods\\Renamed.clawedmod",
+        replacement: {
+          action: "replaceMatchingIdentity",
+          packageIdentityId: "cmm:generated:Renamed"
+        }
+      })
+    ).toMatchObject({
+      replacement: { packageIdentityId: "cmm:generated:Renamed" }
+    });
+
+    expect(
+      ImportModPackageResultSchema.parse({
+        status: "needsReplacementConfirmation",
+        mod: null,
+        packageIdentityId: "cmm:generated:Renamed",
+        replacementCandidates: [],
+        problems: []
+      })
+    ).toMatchObject({ status: "needsReplacementConfirmation" });
   });
 
   it("keeps creator mesh export dialog requests narrow", () => {

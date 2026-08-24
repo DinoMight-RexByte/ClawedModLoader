@@ -46,6 +46,7 @@
     "package:coop-session-guard": "node scripts/createCoopSessionGuardPackage.mjs",
     "package:coop-capacity8": "node scripts/createCoopCapacity8Package.mjs",
     "package:player-name-repair": "node scripts/createPlayerNameRepairPackage.mjs",
+    "package:save-backup": "node scripts/createSaveBackupPackage.mjs",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",

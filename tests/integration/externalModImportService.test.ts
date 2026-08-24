@@ -38,6 +38,7 @@ afterEach(async () => {
 async function makeImporter(): Promise<{
   root: string;
   service: LocalExternalModImportService;
+  libraryService: LocalModLibraryService;
 }> {
   tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-external-import-"));
   const storageService = new FakeStorageService(createStorageLayout(tempRoot));
@@ -49,6 +50,7 @@ async function makeImporter(): Promise<{
 
   return {
     root: tempRoot,
+    libraryService,
     service: new LocalExternalModImportService(
       storageService,
       packageService,
@@ -100,6 +102,7 @@ describe("external mod import service", () => {
     expect(result.status).toBe("installed");
     expect(result.mod).toMatchObject({
       id: "external.cool_clawed_p",
+      packageIdentityId: `cmm:external:rawPak:${inspection.sha256}`,
       loader: "pak",
       version: "0.0.0-external"
     });
@@ -150,6 +153,10 @@ describe("external mod import service", () => {
         requiresUserOwnedSource: true
       }
     });
+    expect(installedManifest.packageIdentity).toMatchObject({
+      id: `cmm:external:rawPak:${inspection.sha256}`,
+      source: "externalImport"
+    });
     expect(
       installedManifest.creatorAssets?.importProvenance[0].sourceHashes[0]
     ).toMatchObject({
@@ -161,6 +168,41 @@ describe("external mod import service", () => {
     expect(checksums.files[0]).toMatchObject({
       path: "payload/Content/Paks/Cool_Clawed_P.pak"
     });
+  });
+
+  it("replaces generated external packages only after matching identity confirmation", async () => {
+    const { root, service, libraryService } = await makeImporter();
+    const firstPakPath = path.join(root, "FirstName.pak");
+    const secondPakPath = path.join(root, "SecondName.pak");
+    await writeFile(firstPakPath, "same pak bytes");
+    await writeFile(secondPakPath, "same pak bytes");
+
+    const first = await service.importExternalModPackage({
+      packagePath: firstPakPath
+    });
+    const pending = await service.importExternalModPackage({
+      packagePath: secondPakPath
+    });
+
+    expect(first.status).toBe("installed");
+    expect(pending.status).toBe("needsReplacementConfirmation");
+    expect(pending.replacementCandidates?.[0]).toMatchObject({
+      id: "external.firstname"
+    });
+
+    const replaced = await service.importExternalModPackage({
+      packagePath: secondPakPath,
+      replacement: {
+        action: "replaceMatchingIdentity",
+        packageIdentityId: pending.packageIdentityId!
+      }
+    });
+
+    expect(replaced.status).toBe("installed");
+    expect(replaced.mod).toMatchObject({ id: "external.secondname" });
+    expect((await libraryService.listInstalledMods()).mods.map((mod) => mod.id)).toEqual([
+      "external.secondname"
+    ]);
   });
 
   it("converts a Thunderstore-style ZIP with Pak payloads", async () => {
@@ -236,6 +278,7 @@ describe("external mod import service", () => {
     expect(result.status).toBe("installed");
     expect(result.mod).toMatchObject({
       id: "external_communitylua",
+      packageIdentityId: `cmm:external:ue4ssArchive:${inspection.sha256}`,
       loader: "ue4ss",
       version: "0.0.0-external"
     });
@@ -287,6 +330,10 @@ describe("external mod import service", () => {
       role: "support",
       source: "external",
       payloadPath: "payload/Mods/external_communitylua/Scripts/main.lua"
+    });
+    expect(installedManifest.packageIdentity).toMatchObject({
+      id: `cmm:external:ue4ssArchive:${inspection.sha256}`,
+      source: "externalImport"
     });
     expect(installedManifest.creatorAssets?.replacements).toHaveLength(0);
   });

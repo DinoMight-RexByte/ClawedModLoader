@@ -6,6 +6,7 @@ import JSZip from "jszip";
 import {
   currentClawedSteamBuildId,
   generatedCreatorSupportMetadata,
+  generatedPackageIdentity,
   generatedSupportedSteamBuilds
 } from "./clawedBuildMetadata.mjs";
 
@@ -759,6 +760,7 @@ const manifest = {
   conflicts: [],
   loadAfter: [],
   loadBefore: [],
+  packageIdentity: generatedPackageIdentity(modId),
   creatorAssets: generatedCreatorSupportMetadata({
     modId,
     modName,

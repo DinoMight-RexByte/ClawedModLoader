@@ -6,15 +6,16 @@ import JSZip from "jszip";
 import {
   currentClawedSteamBuildId,
   generatedCreatorSupportMetadata,
+  generatedPackageIdentity,
   generatedSupportedSteamBuilds
 } from "./clawedBuildMetadata.mjs";
 
 const modId = "PlayerNamesFix";
 const modName = "Player Names Fix";
-const version = "0.1.0-prototype.20260822";
+const version = "0.1.1-prototype.20260824";
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
-  "PlayerState name repair package generated against the currently detected Clawed build; death and host-client runtime behavior have not been live validated.";
+  "PlayerState name repair package generated against the currently detected Clawed build with local host controller name fallback; death and host-client runtime behavior have not been live validated.";
 const releaseRoot = path.resolve("release");
 const outputRoot = path.resolve(
   process.env.CMM_PLAYER_NAME_REPAIR_OUTPUT_DIR ??
@@ -22,10 +23,12 @@ const outputRoot = path.resolve(
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
 const lua = String.raw`local marker = "[PlayerNamesFix] "
-local version = "0.1.0-prototype.20260822"
+local version = "0.1.1-prototype.20260824"
+local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
 local scan_interval_ms = 1000
 local max_states_per_scan = 64
 local cached_names = {}
+local local_name_cache = nil
 local missing_source_logged = {}
 local unpack_fn = table.unpack or unpack
 
@@ -156,6 +159,16 @@ local function remember_name(state, name, source)
     return true
 end
 
+local function remember_local_name(name, source)
+    name = usable_name(name)
+    if name == nil then return false end
+    local changed = local_name_cache ~= name
+    local_name_cache = name
+    cached_names["local:player"] = name
+    if changed then log("local_cache", tostring(source) .. "|name_len=" .. tostring(#name)) end
+    return true
+end
+
 local function cached_name(state)
     for _, key in ipairs(state_keys(state)) do
         local name = usable_name(cached_names[key])
@@ -166,6 +179,31 @@ end
 
 local function same_object(left, right)
     return is_valid(left) and is_valid(right) and full_name(left) == full_name(right)
+end
+
+local function state_identity_values(state)
+    local values = {}
+    for _, prop in ipairs({ "UniqueId", "BP_UniqueNetId", "UniqueNetId", "SavedNetworkAddress", "PlayerId" }) do
+        local text = trim(text_value(get_prop(state, prop)) or "")
+        if text ~= "" and text ~= "nil" and text ~= "<nil>" then table.insert(values, prop .. ":" .. text) end
+    end
+    local ok, unique = call_method(state, "GetUniqueId")
+    local text = ok and trim(text_value(unique) or "") or ""
+    if text ~= "" and text ~= "nil" and text ~= "<nil>" then table.insert(values, "GetUniqueId:" .. text) end
+    return values
+end
+
+local function same_state_identity(left, right)
+    if same_object(left, right) then return true end
+    if not is_valid(left) or not is_valid(right) then return false end
+    local left_values = state_identity_values(left)
+    local right_values = state_identity_values(right)
+    for _, left_value in ipairs(left_values) do
+        for _, right_value in ipairs(right_values) do
+            if left_value == right_value then return true end
+        end
+    end
+    return false
 end
 
 local function find_all(class_name)
@@ -248,16 +286,72 @@ local function collect_controllers()
     return controllers
 end
 
-local function controller_for_state(state)
-    for _, controller in ipairs(collect_controllers()) do
-        if same_object(get_prop(controller, "PlayerState"), state) then return controller end
+local function is_local_controller(controller)
+    local ok, value = call_method(controller, "IsLocalController")
+    return ok and value == true
+end
+
+local function object_player_state(object)
+    local state = get_prop(object, "PlayerState")
+    if is_valid(state) then return state end
+    for _, method in ipairs({ "GetPlayerState", "K2_GetPlayerState" }) do
+        local ok, value = call_method(object, method)
+        if ok and is_valid(value) then return value end
     end
     return nil
 end
 
-local function is_local_controller(controller)
-    local ok, value = call_method(controller, "IsLocalController")
-    return ok and value == true
+local function controller_pawn(controller)
+    for _, method in ipairs({ "GetPawn", "K2_GetPawn" }) do
+        local ok, value = call_method(controller, method)
+        if ok and is_valid(value) then return value end
+    end
+    for _, prop in ipairs({ "Pawn", "AcknowledgedPawn" }) do
+        local value = get_prop(controller, prop)
+        if is_valid(value) then return value end
+    end
+    return nil
+end
+
+local function controller_player_state(controller)
+    local state = object_player_state(controller)
+    if is_valid(state) then return state end
+    return object_player_state(controller_pawn(controller))
+end
+
+local function local_controller()
+    if ok_helpers and UEHelpers ~= nil and type(UEHelpers.GetPlayerController) == "function" then
+        local ok, controller = pcall(function() return UEHelpers.GetPlayerController() end)
+        if ok and is_valid(controller) then return controller end
+    end
+    local first = nil
+    local count = 0
+    for _, controller in ipairs(collect_controllers()) do
+        count = count + 1
+        if first == nil and is_valid(controller) then first = controller end
+        if is_local_controller(controller) then return controller end
+    end
+    if count == 1 then return first end
+    return nil
+end
+
+local function controller_for_state(state)
+    local local_candidate = nil
+    for _, controller in ipairs(collect_controllers()) do
+        if same_state_identity(controller_player_state(controller), state) then return controller end
+        if is_local_controller(controller) then local_candidate = controller end
+    end
+    if same_state_identity(controller_player_state(local_candidate), state) then return local_candidate end
+    return nil
+end
+
+local function is_local_player_state(state, controller)
+    if is_valid(controller) and is_local_controller(controller) then return true end
+    local local_controller_value = local_controller()
+    if same_state_identity(controller_player_state(local_controller_value), state) then return true end
+    if same_object(get_prop(state, "Owner"), local_controller_value) then return true end
+    local ok_owner, owner = call_method(state, "GetOwner")
+    return ok_owner and same_object(owner, local_controller_value)
 end
 
 local function read_state_name(state)
@@ -302,10 +396,106 @@ local function static_find(path_value)
     return nil
 end
 
+local function controller_local_player(controller)
+    for _, method in ipairs({ "GetLocalPlayer", "GetPlayer" }) do
+        local ok, value = call_method(controller, method)
+        if ok and is_valid(value) then return value end
+    end
+    for _, prop in ipairs({ "LocalPlayer", "Player" }) do
+        local value = get_prop(controller, prop)
+        if is_valid(value) then return value end
+    end
+    return nil
+end
+
+local function try_object_names(objects, methods, props, source)
+    for _, object in ipairs(objects) do
+        for _, method in ipairs(methods) do
+            local ok, value = call_method(object, method)
+            local name = ok and usable_name(value) or nil
+            if name ~= nil then return name, source .. ":" .. method end
+        end
+        for _, prop in ipairs(props) do
+            local name = usable_name(get_prop(object, prop))
+            if name ~= nil then return name, source .. ":" .. prop end
+        end
+    end
+    return nil, nil
+end
+
+local function local_online_name(state, controller)
+    if not is_valid(controller) then controller = local_controller() end
+    local local_player = controller_local_player(controller)
+    local objects = {}
+    if is_valid(state) then table.insert(objects, state) end
+    if is_valid(controller) then table.insert(objects, controller) end
+    if is_valid(local_player) then table.insert(objects, local_player) end
+    local name, source = try_object_names(
+        objects,
+        { "GetSteamName", "GetPlatformUserName", "GetPlayerNickname", "GetDisplayName", "GetPlayerName", "GetNickname", "GetUsername", "GetUserName" },
+        { "SteamName", "PlatformUserName", "PlayerNickname", "PlayerName", "PlayerDisplayName", "DisplayName", "Username", "UserName" },
+        "local_object"
+    )
+    if name ~= nil then
+        remember_local_name(name, source)
+        if is_valid(state) then remember_name(state, name, source) end
+        return name, source
+    end
+    local world = find_first("World")
+    local libraries = {
+        "/Script/AdvancedSteamSessions.Default__AdvancedSteamFriendsLibrary",
+        "/Script/AdvancedSessions.Default__AdvancedFriendsLibrary",
+        "/Script/AdvancedSessions.Default__AdvancedSessionsLibrary",
+        "/Script/Engine.Default__GameplayStatics"
+    }
+    local methods = {
+        "GetSteamPersonaName",
+        "Get Steam Persona Name",
+        "GetPlayerNickname",
+        "Get Player Nickname",
+        "GetPlayerName",
+        "Get Player Name",
+        "GetDisplayName",
+        "Get Display Name"
+    }
+    for _, library_path in ipairs(libraries) do
+        local library = static_find(library_path)
+        if library ~= nil then
+            for _, method in ipairs(methods) do
+                local arg_sets = { {} }
+                if is_valid(controller) then
+                    table.insert(arg_sets, { controller })
+                    if world ~= nil then table.insert(arg_sets, { world, controller }) end
+                end
+                if is_valid(local_player) then
+                    table.insert(arg_sets, { local_player })
+                    if world ~= nil then table.insert(arg_sets, { world, local_player }) end
+                end
+                for _, args in ipairs(arg_sets) do
+                    local ok, value = call_method(library, method, unpack_fn(args))
+                    name = ok and usable_name(value) or nil
+                    if name ~= nil then
+                        source = "local_library:" .. library_path .. ":" .. method
+                        remember_local_name(name, source)
+                        if is_valid(state) then remember_name(state, name, source) end
+                        return name, source
+                    end
+                end
+            end
+        end
+    end
+    name = usable_name(local_name_cache)
+    if name ~= nil then return name, "local_cache" end
+    return nil, "local_unavailable"
+end
+
 local function online_name_for_state(state)
     local controller = controller_for_state(state)
-    local local_state = is_local_controller(controller)
+    local local_state = is_local_player_state(state, controller)
+    if local_state and not is_valid(controller) then controller = local_controller() end
     local unique = get_prop(state, "UniqueId") or get_prop(state, "BP_UniqueNetId") or get_prop(state, "UniqueNetId")
+    local ok_unique, method_unique = call_method(state, "GetUniqueId")
+    if unique == nil and ok_unique then unique = method_unique end
     local world = find_first("World")
     local libraries = {
         "/Script/AdvancedSteamSessions.Default__AdvancedSteamFriendsLibrary",
@@ -356,10 +546,12 @@ local function online_name_for_state(state)
             local name = ok and usable_name(value) or nil
             if name ~= nil then
                 remember_name(state, name, method)
+                if local_state then remember_local_name(name, method) end
                 return name, method
             end
         end
     end
+    if local_state then return local_online_name(state, controller) end
     return nil, "online_unavailable"
 end
 
@@ -425,6 +617,8 @@ local scan_count = 0
 local function scan(reason)
     scan_count = scan_count + 1
     local repaired = 0
+    local local_pc = local_controller()
+    if is_valid(local_pc) then local_online_name(nil, local_pc) end
     local states = collect_player_states()
     for _, state in ipairs(states) do
         if repair_state(state, reason) then repaired = repaired + 1 end
@@ -458,6 +652,18 @@ local function register_hook(label, hook_name, callback)
     log("hook_register", label .. "|" .. tostring(ok) .. "|" .. tostring(err))
 end
 
+local function handle_controller_name_hook(label, self, new_name)
+    local controller = unwrap(self)
+    local name = usable_name(new_name)
+    if name == nil then return end
+    local state = controller_player_state(controller)
+    if is_local_controller(controller) then remember_local_name(name, label) end
+    if is_valid(state) then
+        remember_name(state, name, label)
+        repair_state(state, label)
+    end
+end
+
 register_hook("PlayerState_SetPlayerName", "/Script/Engine.PlayerState:SetPlayerName", function(self, new_name)
     local state = unwrap(self)
     local name = usable_name(new_name)
@@ -467,6 +673,14 @@ end)
 
 register_hook("PlayerState_OnRep_PlayerName", "/Script/Engine.PlayerState:OnRep_PlayerName", function(self)
     repair_state(unwrap(self), "OnRep_PlayerName")
+end)
+
+register_hook("PlayerController_ServerChangeName", "/Script/Engine.PlayerController:ServerChangeName", function(self, new_name)
+    handle_controller_name_hook("ServerChangeName_hook", self, new_name)
+end)
+
+register_hook("PlayerController_ClientSetName", "/Script/Engine.PlayerController:ClientSetName", function(self, new_name)
+    handle_controller_name_hook("ClientSetName_hook", self, new_name)
 end)
 
 if type(NotifyOnNewObject) == "function" then
@@ -510,6 +724,7 @@ const readme = [
   "- Caches real non-placeholder names as soon as the game exposes them through PlayerState methods or fields.",
   "- When a PlayerState name is empty, `Player Name`, or `(Player Name)`, restores the cached name for the same PlayerState identity.",
   "- Attempts in-process Unreal/AdvancedSessions/AdvancedSteamSessions display-name functions when present.",
+  "- For the local host player, also resolves names through the local PlayerController, LocalPlayer, and no-argument persona-name functions.",
   "- Repairs through `SetPlayerName` first, then `SetPlayerNameInternal`, then PlayerState name fields as fallback.",
   "- Calls `OnRep_PlayerName` after a local repair and `ForceNetUpdate` only when the PlayerState reports authority.",
   "- Exposes `cmm_repair_names` as a manual UE console command when console command handlers are available.",
@@ -519,6 +734,7 @@ const readme = [
   "- `[PlayerNamesFix] startup|...`",
   "- `[PlayerNamesFix] hook_register|...`",
   "- `[PlayerNamesFix] cache|...`",
+  "- `[PlayerNamesFix] local_cache|...`",
   "- `[PlayerNamesFix] repair|...`",
   "- `[PlayerNamesFix] repair_wait|...`",
   "- `[PlayerNamesFix] scan|...`",
@@ -535,7 +751,7 @@ const readme = [
   "Validation boundary:",
   "",
   "- Package structure and CMM deployment can be verified without launching Clawed.",
-  "- Death-time repair, Steam-name resolution, and host/client replication behavior remain unvalidated until tested in a real Clawed session with the matching UE4SS runtime."
+  "- The local host fallback is packaged but death-time repair, Steam-name resolution, and host/client replication behavior remain unvalidated until tested in a real Clawed session with the matching UE4SS runtime."
 ].join("\n");
 const manifest = {
   schemaVersion: 1,
@@ -551,6 +767,7 @@ const manifest = {
   conflicts: [],
   loadAfter: [],
   loadBefore: [],
+  packageIdentity: generatedPackageIdentity(modId),
   creatorAssets: generatedCreatorSupportMetadata({
     modId,
     modName,
@@ -622,6 +839,7 @@ async function writePackage(outputDirectory) {
       "caches non-placeholder PlayerState names",
       "repairs empty, Player Name, and (Player Name) values only",
       "tries in-process Unreal, AdvancedSessions, and AdvancedSteamSessions display-name functions when available",
+      "uses local PlayerController and LocalPlayer name fallback for the host PlayerState",
       "does not read Steam account files or local user directories"
     ],
     safetyBoundaries: [
@@ -629,12 +847,13 @@ async function writePackage(outputDirectory) {
       "no Steam/EOS/executable/anti-cheat/game DLL/OnlineSubsystem binary patching",
       "no save, inventory, score, movement, collision, pawn transform, or world-item mutation",
       "no networking identity spoofing or server-authority bypass",
-      "death-time and host-client behavior unvalidated"
+      "death-time and host-client replication behavior unvalidated"
     ],
     consoleCommands: ["cmm_repair_names"],
     logMarkers: [
       "[PlayerNamesFix] startup|...",
       "[PlayerNamesFix] cache|...",
+      "[PlayerNamesFix] local_cache|...",
       "[PlayerNamesFix] repair|...",
       "[PlayerNamesFix] repair_wait|..."
     ],

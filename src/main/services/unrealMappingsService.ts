@@ -162,6 +162,9 @@ export class LocalUnrealMappingsService implements UnrealMappingsServiceContract
     let activeStage: CreatorMappingsDumpProgress["stage"] = "launching";
     try {
       this.processSupervisor.markStarting();
+      this.processSupervisor.markAppExitManagedLaunch(
+        discovery.gameExecutable as string
+      );
       activeStage = "launching";
       emitProgress(onProgress, {
         stage: "launching",
@@ -180,7 +183,8 @@ export class LocalUnrealMappingsService implements UnrealMappingsServiceContract
       const processInfo = await this.processSupervisor.waitForRunning(
         discovery.gameExecutable as string,
         this.launchDetectTimeoutMs,
-        this.pollIntervalMs
+        this.pollIntervalMs,
+        { appExitManaged: true }
       );
       if (!processInfo) {
         throw new Error("Steam launch was requested, but Clawed was not detected.");

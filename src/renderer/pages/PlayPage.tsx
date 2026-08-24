@@ -14,6 +14,7 @@ import type {
   LaunchCommandKind,
   LaunchCommandResult,
   PlaySnapshot,
+  RuntimeSnapshot,
   ValidatePackagedRuntimeResult
 } from "../../shared/contracts/app";
 import { StatusCard } from "../components/StatusCard";
@@ -194,6 +195,42 @@ function isValidatedPackagedRuntime(snapshot: PlaySnapshot | null): boolean {
   );
 }
 
+function isValidatedPackagedRuntimeSnapshot(
+  runtime: RuntimeSnapshot | null
+): boolean {
+  return runtime?.ue4ss?.source === "bundled" && runtime.status === "validated";
+}
+
+function runtimeFirstDeploymentState(
+  snapshot: PlaySnapshot
+): PlaySnapshot["deploymentState"] {
+  if (snapshot.runtime.status === "unvalidated") {
+    return "runtimeUnvalidated";
+  }
+
+  if (snapshot.runtime.status === "incompatible") {
+    return "runtimeIncompatible";
+  }
+
+  return snapshot.deploymentState;
+}
+
+function withRuntimeSnapshot(
+  snapshot: PlaySnapshot,
+  runtime: RuntimeSnapshot
+): PlaySnapshot {
+  return {
+    ...snapshot,
+    runtime,
+    deploymentState:
+      runtime.status === "validated" &&
+      (snapshot.deploymentState === "runtimeUnvalidated" ||
+        snapshot.deploymentState === "runtimeIncompatible")
+        ? "deploymentRequired"
+        : snapshot.deploymentState
+  };
+}
+
 function formatElapsed(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = `${seconds % 60}`.padStart(2, "0");
@@ -217,21 +254,31 @@ export function PlayPage(): ReactElement {
   const refreshInFlight = useRef(false);
   const snapshotRequestId = useRef(0);
   const runtimeValidationRunning = busyCommand === "validateRuntime";
+  const displayedDeploymentState = snapshot
+    ? runtimeFirstDeploymentState(snapshot)
+    : undefined;
   const deploymentValue = runtimeValidationRunning
     ? "Validation Running"
-    : snapshot
-      ? formatDeployment(snapshot.deploymentState)
+    : displayedDeploymentState
+      ? formatDeployment(displayedDeploymentState)
       : "Loading";
   const deploymentDetail = runtimeValidationRunning
     ? "Packaged runtime validation launch in progress"
+    : displayedDeploymentState === "runtimeUnvalidated"
+      ? "Validate runtime before deployment"
+      : displayedDeploymentState === "runtimeIncompatible"
+        ? "Runtime must validate before modded deployment"
     : `Current launch mode: ${snapshot?.launchMode ?? "VANILLA"}`;
   const deploymentStatusTone = runtimeValidationRunning
     ? "warning"
-    : deploymentTone(snapshot?.deploymentState);
+    : deploymentTone(displayedDeploymentState);
   const canValidateRuntime =
     snapshot?.runtime.ue4ss?.source === "bundled" &&
     (snapshot.runtime.status === "unvalidated" ||
       snapshot.runtime.status === "incompatible");
+  const showDeploymentRequiredNote =
+    displayedDeploymentState === "deploymentRequired" &&
+    snapshot?.runtime.status === "validated";
 
   const loadSnapshot = useCallback(async (): Promise<PlaySnapshot | null> => {
     const requestId = snapshotRequestId.current + 1;
@@ -332,24 +379,53 @@ export function PlayPage(): ReactElement {
 
     try {
       const result = await window.cmm.validatePackagedRuntime();
-      const nextSnapshot = await loadSnapshot();
+      let nextSnapshot = await loadSnapshot();
+      const runtimeSnapshot = await window.cmm
+        .getRuntimeSnapshot()
+        .catch((): RuntimeSnapshot | null => null);
+      const validatedRuntime = isValidatedPackagedRuntimeSnapshot(runtimeSnapshot)
+        ? runtimeSnapshot
+        : null;
+      const runtimeForSnapshot = validatedRuntime;
+      if (runtimeForSnapshot && nextSnapshot) {
+        nextSnapshot = withRuntimeSnapshot(nextSnapshot, runtimeForSnapshot);
+        setSnapshot(nextSnapshot);
+      } else if (runtimeForSnapshot) {
+        setSnapshot((current) =>
+          current ? withRuntimeSnapshot(current, runtimeForSnapshot) : current
+        );
+      }
       const alreadyValidated =
         isRuntimeValidationNotRequired(result) &&
-        isValidatedPackagedRuntime(nextSnapshot);
+        (isValidatedPackagedRuntimeSnapshot(validatedRuntime) ||
+          isValidatedPackagedRuntime(nextSnapshot));
+      const validationCurrent =
+        result.status === "validated" &&
+        (isValidatedPackagedRuntimeSnapshot(validatedRuntime) ||
+          isValidatedPackagedRuntime(nextSnapshot));
       setCommandResult({
         kind: "launchModded",
         launchMode: "MODDED",
         lifecycleState: snapshot?.gameState === "RUNNING" ? "RUNNING" : "STOPPED",
         status:
-          result.status === "validated" || alreadyValidated
+          validationCurrent || alreadyValidated
             ? "completed"
             : "blocked",
-        title: alreadyValidated ? "Runtime already validated" : validationTitle(result),
+        title:
+          validationCurrent || alreadyValidated
+            ? alreadyValidated
+              ? "Runtime already validated"
+              : "Runtime validated"
+            : validationTitle(result),
         message: alreadyValidated
           ? "The packaged UE4SS runtime is already validated for the detected Clawed build."
+          : result.status === "validated" && !validationCurrent
+            ? "Validation completed, but CMM could not match the retained evidence to the current Clawed fingerprint."
           : validationMessage(result),
         nextStep: alreadyValidated
           ? nextSnapshot?.runtime.ue4ss?.validation?.evidencePath
+          : result.status === "validated" && !validationCurrent
+            ? result.evidencePath ?? nextSnapshot?.runtime.problems[0]?.technicalDetail
           : validationNextStep(result),
         occurredAt: new Date().toISOString()
       });
@@ -517,6 +593,30 @@ export function PlayPage(): ReactElement {
             </button>
           ) : null}
         </div>
+
+        {showDeploymentRequiredNote ? (
+          <div
+            className="mt-4 rounded-md border border-app-border bg-app-surfaceRaised p-4"
+            role="status"
+          >
+            <div className="flex items-start gap-3">
+              <AlertTriangle
+                aria-hidden="true"
+                className="mt-0.5 shrink-0 text-app-warning"
+                size={18}
+              />
+              <div className="min-w-0">
+                <div className="font-medium">Deployment required</div>
+                <p className="mt-1 text-sm leading-5 text-app-muted">
+                  The runtime is valid, but the active profile has not been
+                  staged in the game folder yet. Use Launch Modded to deploy the
+                  selected profile and start Clawed, or Refresh if you already
+                  changed profiles or mods.
+                </p>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {runtimeValidationRunning ? (
           <div

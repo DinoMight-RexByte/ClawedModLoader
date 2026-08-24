@@ -3,6 +3,7 @@ import path from "node:path";
 
 import {
   CLAWED_STEAM_APP_ID,
+  type DeploymentManifest,
   type GameDiscovery,
   type ModProblem,
   type RecordUe4ssRuntimeValidationResult,
@@ -169,6 +170,7 @@ export class PackagedRuntimeValidationService
 
       try {
         this.processSupervisor.markStarting();
+        this.processSupervisor.markAppExitManagedLaunch(discovery.gameExecutable);
         run.steamLaunchRequested = true;
         await this.platform.launchSteamApp(CLAWED_STEAM_APP_ID);
         throwIfCancelled(run);
@@ -300,11 +302,11 @@ export class PackagedRuntimeValidationService
         ]);
       }
 
-      const fingerprint = deployment.manifest.gameFingerprint;
+      const fingerprint = runtimeValidationTarget(deployment.manifest);
       const recording = await this.runtimeManager.recordBundledUe4ssRuntimeValidation({
         status: validationStatus,
-        steamBuildId: fingerprint.steamBuildId ?? null,
-        fingerprintSha256: fingerprint.fingerprintSha256 ?? null,
+        steamBuildId: fingerprint.steamBuildId,
+        fingerprintSha256: fingerprint.fingerprintSha256,
         evidencePath,
         markerModId: PACKAGED_RUNTIME_VALIDATION_MOD_ID,
         details: validationDetails
@@ -328,6 +330,10 @@ export class PackagedRuntimeValidationService
       });
 
       if (recording.status !== "recorded") {
+        return validationResult("failed", evidencePath, recording, recording.problems);
+      }
+
+      if (validationStatus === "VALIDATED" && recording.problems.length > 0) {
         return validationResult("failed", evidencePath, recording, recording.problems);
       }
 
@@ -405,7 +411,8 @@ export class PackagedRuntimeValidationService
       const processInfo = await this.processSupervisor.waitForRunning(
         gameExecutable,
         1,
-        0
+        0,
+        { appExitManaged: true }
       );
       if (processInfo) {
         return processInfo;
@@ -425,7 +432,8 @@ export class PackagedRuntimeValidationService
       const processInfo = await this.processSupervisor.waitForRunning(
         gameExecutable,
         1,
-        0
+        0,
+        { appExitManaged: true }
       );
       if (processInfo) {
         return processInfo;
@@ -595,6 +603,28 @@ function validationResult(
     recording,
     problems
   };
+}
+
+function runtimeValidationTarget(manifest: DeploymentManifest): {
+  steamBuildId: string | null;
+  fingerprintSha256: string | null;
+} {
+  const targetSteamBuildId = stringOrNull(
+    manifest.runtimeConfiguration.targetSteamBuildId
+  );
+  const targetFingerprint = stringOrNull(
+    manifest.runtimeConfiguration.targetFingerprint
+  );
+
+  return {
+    steamBuildId: manifest.gameFingerprint.steamBuildId ?? targetSteamBuildId ?? null,
+    fingerprintSha256:
+      manifest.gameFingerprint.fingerprintSha256 ?? targetFingerprint ?? null
+  };
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function timestampForPath(): string {

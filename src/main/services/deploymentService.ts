@@ -102,7 +102,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     };
   }
 
-  async getSnapshot(): Promise<DeploymentSnapshot> {
+  async getSnapshot(discovery?: GameDiscovery): Promise<DeploymentSnapshot> {
     const [manifest, activeProfile, validation, installedMods] =
       await Promise.all([
       this.readCurrentManifest(),
@@ -110,9 +110,23 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       this.loadOrderService.validateActiveOrder(),
       this.modLibraryService.listInstalledModManifests()
     ]);
+    const fingerprintDiscovery = snapshotDiscovery(discovery, manifest);
+    const fingerprint = fingerprintDiscovery
+      ? await this.gameAdapter.getFingerprint(
+          fingerprintDiscovery,
+          manifest?.gameFingerprint as Partial<GameFingerprint> | null,
+          { mode: "quick" }
+        )
+      : null;
+    const runtimeScope = manifest
+      ? runtimeScopeFromManifest(manifest)
+      : {
+          steamBuildId: fingerprint?.steamBuildId ?? null,
+          fingerprintSha256: fingerprint?.fingerprintSha256 ?? null
+        };
     const runtime = await this.runtimeManager.getRuntimeSnapshot(
-      manifest?.gameFingerprint.steamBuildId ?? null,
-      manifest?.gameFingerprint.fingerprintSha256 ?? null
+      runtimeScope.steamBuildId,
+      runtimeScope.fingerprintSha256
     );
     const problems: ModProblem[] = [];
 
@@ -129,12 +143,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       const verifyProblems = await this.verifyManifestFiles(manifest);
       problems.push(...verifyProblems);
       problems.push(...runtimeConfigurationMessages(manifest));
-      const fingerprint = await this.gameAdapter.getFingerprint(
-        discoveryFromManifest(manifest),
-        manifest.gameFingerprint as Partial<GameFingerprint>,
-        { mode: "quick" }
-      );
-      problems.push(...fingerprint.problems);
+      problems.push(...(fingerprint?.problems ?? []));
       const hasVerificationError = verifyProblems.some(
         (problem) => problem.severity === "error"
       );
@@ -142,7 +151,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         manifest.profileId === activeProfile.id && validation.validity === "valid";
       const state: DeploymentSnapshot["state"] = hasVerificationError
         ? "deploymentError"
-        : fingerprint.status === "NEW_CHANGED_BUILD"
+        : fingerprint?.status === "NEW_CHANGED_BUILD"
           ? "runtimeIncompatible"
           : runtimeValidationManifest
             ? "runtimeUnvalidated"
@@ -252,9 +261,18 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     }
 
     const activeManifest = await this.readCurrentManifest();
+    const runtimeReference = activeManifest
+      ? runtimeReferenceFromManifest(activeManifest)
+      : null;
+    if (activeManifest) {
+      const vanillaResult = await this.prepareVanillaDeployment(discovery);
+      if (vanillaResult.status !== "ok") {
+        return blockedResult("deploymentError", vanillaResult.problems);
+      }
+    }
     const currentFingerprint = await this.gameAdapter.getFingerprint(
       discovery,
-      activeManifest?.gameFingerprint as Partial<GameFingerprint> | null,
+      runtimeReference,
       { mode: "quick" }
     );
     const buildRefreshProblems =
@@ -290,6 +308,10 @@ export class LocalDeploymentService implements DeploymentServiceContract {
           ? [autoRuntimeUpdateDisabledProblem()]
           : [])
       ]);
+    }
+
+    if (plan.requiresRuntime && runtime.status === "unvalidated") {
+      return blockedResult("runtimeUnvalidated", runtime.problems);
     }
 
     const transactionId = randomUUID();
@@ -490,6 +512,11 @@ export class LocalDeploymentService implements DeploymentServiceContract {
           "No UE4SS deployment adapter is available for packaged runtime validation."
         )
       ]);
+    }
+
+    const vanillaResult = await this.prepareVanillaDeployment(discovery);
+    if (vanillaResult.status !== "ok") {
+      return blockedResult("deploymentError", vanillaResult.problems);
     }
 
     const currentFingerprint = await this.gameAdapter.getFingerprint(
@@ -1499,6 +1526,73 @@ function discoveryFromManifest(manifest: DeploymentManifest): GameDiscovery {
     diagnosticErrors: [],
     discoveredAt: new Date().toISOString()
   };
+}
+
+function snapshotDiscovery(
+  discovery: GameDiscovery | undefined,
+  manifest: DeploymentManifest | null
+): GameDiscovery | null {
+  if (discovery?.discoveryStatus === "READY") {
+    return discovery;
+  }
+
+  return manifest ? discoveryFromManifest(manifest) : null;
+}
+
+function runtimeScopeFromManifest(manifest: DeploymentManifest): {
+  steamBuildId: string | null;
+  fingerprintSha256: string | null;
+} {
+  if (isRuntimeValidationManifest(manifest)) {
+    return {
+      steamBuildId: manifest.gameFingerprint.steamBuildId ?? null,
+      fingerprintSha256: manifest.gameFingerprint.fingerprintSha256 ?? null
+    };
+  }
+
+  return {
+    steamBuildId:
+      configurationString(manifest.runtimeConfiguration, "targetSteamBuildId") ??
+      manifest.gameFingerprint.steamBuildId ??
+      null,
+    fingerprintSha256:
+      configurationString(manifest.runtimeConfiguration, "targetFingerprint") ??
+      manifest.gameFingerprint.fingerprintSha256 ??
+      null
+  };
+}
+
+function runtimeReferenceFromManifest(
+  manifest: DeploymentManifest
+): Partial<GameFingerprint> {
+  const scope = runtimeScopeFromManifest(manifest);
+  return {
+    ...scope,
+    fingerprintMode: manifest.gameFingerprint.fingerprintMode ?? "quick"
+  };
+}
+
+function configurationString(
+  configuration: Record<string, unknown>,
+  key: string
+): string | null {
+  const value = configuration[key];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+
+  if (
+    configuration.type === "composite" &&
+    typeof configuration.adapters === "object" &&
+    configuration.adapters !== null
+  ) {
+    const ue4ss = (configuration.adapters as Record<string, unknown>).ue4ss;
+    if (typeof ue4ss === "object" && ue4ss !== null) {
+      return configurationString(ue4ss as Record<string, unknown>, key);
+    }
+  }
+
+  return null;
 }
 
 function manifestRequiresRuntime(manifest: DeploymentManifest): boolean {

@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import JSZip from "jszip";
 import {
   currentClawedSteamBuildId,
+  generatedPackageIdentity,
   generatedSupportedSteamBuilds,
   packageVirtualPath
 } from "./clawedBuildMetadata.mjs";
@@ -356,6 +357,7 @@ async function writePackage(
     conflicts: [],
     loadAfter: [],
     loadBefore: [],
+    packageIdentity: generatedPackageIdentity(modId),
     creatorAssets: textureCreatorAssets(payloadPaths, sourceImageSha256)
   };
   const readme = [

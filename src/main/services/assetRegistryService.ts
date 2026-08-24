@@ -3396,6 +3396,12 @@ async function exportCreatorMeshPackage(
     path: item.payloadPath,
     sha256: hashBuffer(item.data)
   }));
+  const packageIdentityId = `cmm:creator-export:${hashStable(
+    exportedItems
+      .map((item) => item.asset?.id ?? item.payloadPath)
+      .sort()
+      .join("\0")
+  )}`;
   for (const item of exportedItems) {
     zip.file(item.payloadPath, item.data);
   }
@@ -3418,6 +3424,11 @@ async function exportCreatorMeshPackage(
         conflicts: [],
         loadAfter: [],
         loadBefore: [],
+        packageIdentity: {
+          schemaVersion: 1,
+          id: packageIdentityId,
+          source: "creatorExport"
+        },
         creatorAssets: {
           schemaVersion: 1,
           affectedAssets: exportedItems.flatMap((item, itemIndex) =>

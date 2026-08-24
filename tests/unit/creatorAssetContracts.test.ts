@@ -126,6 +126,35 @@ describe("creator asset contracts", () => {
     expect(manifest.creatorAssets).toBeUndefined();
   });
 
+  it("accepts packageIdentity as an optional hidden package identifier", () => {
+    const manifest = ClawedModManifestV1Schema.parse(
+      createFixtureManifest({
+        id: "rename-proof",
+        packageIdentity: {
+          schemaVersion: 1,
+          id: "cmm:generated:rename-proof",
+          source: "cmmGenerated"
+        }
+      })
+    );
+
+    expect(manifest.packageIdentity).toMatchObject({
+      id: "cmm:generated:rename-proof",
+      source: "cmmGenerated"
+    });
+    expect(() =>
+      ClawedModManifestV1Schema.parse(
+        createFixtureManifest({
+          packageIdentity: {
+            schemaVersion: 1,
+            id: "bad identity with spaces",
+            source: "cmmGenerated"
+          }
+        })
+      )
+    ).toThrow();
+  });
+
   it("accepts creatorAssets as an optional .clawedmod manifest extension", () => {
     const manifest = ClawedModManifestV1Schema.parse(
       createFixtureManifest({

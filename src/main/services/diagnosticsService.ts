@@ -57,7 +57,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     const [modLibrary, validation, deployment] = await Promise.all([
       this.dependencies.profileService.listInstalledModsForActiveProfile(),
       this.dependencies.loadOrderService.validateActiveOrder(),
-      this.dependencies.deploymentService.getSnapshot()
+      this.dependencies.deploymentService.getSnapshot(discovery)
     ]);
     const errorCount = validation.problems.filter(
       (problem) => problem.severity === "ERROR"
@@ -106,7 +106,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     ] = await Promise.all([
       this.dependencies.profileService.listInstalledModsForActiveProfile(),
       this.dependencies.loadOrderService.validateActiveOrder(),
-      this.dependencies.deploymentService.getSnapshot(),
+      this.dependencies.deploymentService.getSnapshot(discovery),
       this.getLogsSummary(),
       this.dependencies.assetRegistryService.getSnapshot().catch(() => null)
     ]);
@@ -114,10 +114,6 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       discovery,
       deployment.activeManifest?.gameFingerprint ?? null,
       { mode: "quick" }
-    );
-    const runtime = await this.dependencies.runtimeManager.getRuntimeSnapshot(
-      gameFingerprint.steamBuildId,
-      gameFingerprint.fingerprintSha256
     );
     const services = [
       this.dependencies.gameLocator.getStatus(),
@@ -149,7 +145,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       discovery,
       process,
       gameFingerprint,
-      runtime,
+      runtime: deployment.runtime,
       activeProfile: {
         id: activeProfile.id,
         name: activeProfile.name

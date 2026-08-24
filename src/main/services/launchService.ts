@@ -179,6 +179,7 @@ export class SteamLaunchService implements LaunchServiceContract {
     }
 
     this.processSupervisor.markStarting();
+    this.processSupervisor.markAppExitManagedLaunch(gameExecutable);
     await this.logger.log({
       category: "launchService",
       action: "steam_launch_requested",
@@ -192,7 +193,8 @@ export class SteamLaunchService implements LaunchServiceContract {
     const detectedProcess = await this.processSupervisor.waitForRunning(
       gameExecutable,
       this.launchDetectTimeoutMs,
-      this.pollIntervalMs
+      this.pollIntervalMs,
+      { appExitManaged: true }
     );
 
     if (detectedProcess) {

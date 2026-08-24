@@ -41,6 +41,7 @@ import {
 import { modProblem } from "./packageProblems";
 import { isPathInside } from "./packagePaths";
 import { atomicWriteJson } from "./profileService";
+import { cleanupObsoleteUe4ssRuntimeInstalls } from "./storageCleanupService";
 import type { LifecycleLogger } from "./lifecycleLogger";
 import { isUe4ssRuntimeStructureValid } from "./ue4ssRuntimeLayout";
 
@@ -263,6 +264,9 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
         releaseValidation: this.bundledRuntimeReleaseValidation()
       });
       await atomicWriteJson(await this.getRuntimeIndexPath(), runtime);
+      await cleanupObsoleteUe4ssRuntimeInstalls(layout, runtime.installPath, {
+        obsoleteRuntimeAgeMs: 0
+      });
       await this.logger?.log({
         category: "RUNTIME",
         action: "ue4ss_bundled_runtime_installed",
@@ -423,6 +427,9 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
         releaseValidation: "UNVALIDATED"
       });
       await atomicWriteJson(await this.getRuntimeIndexPath(), runtime);
+      await cleanupObsoleteUe4ssRuntimeInstalls(layout, runtime.installPath, {
+        obsoleteRuntimeAgeMs: 0
+      });
       await this.logger?.log({
         category: "RUNTIME",
         action: "ue4ss_runtime_imported",
@@ -744,7 +751,7 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
         ];
       }
 
-      return unvalidatedRuntimeProblems(
+      return bundledUnvalidatedRuntimeProblems(
         compatibility?.message ??
           "UE4SS is packaged with CMM but has not been validated against the Clawed release build."
       );
@@ -1250,6 +1257,16 @@ function unvalidatedRuntimeProblems(message: string): ModProblem[] {
     modProblem(
       "warning",
       "UE4SS_RUNTIME_UNVALIDATED",
+      message
+    )
+  ];
+}
+
+function bundledUnvalidatedRuntimeProblems(message: string): ModProblem[] {
+  return [
+    modProblem(
+      "warning",
+      "UE4SS_BUNDLED_RUNTIME_UNVALIDATED",
       message
     )
   ];

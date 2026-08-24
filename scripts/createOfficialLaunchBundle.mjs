@@ -37,10 +37,10 @@ const packages = [
     id: "CoopCatchupTeleport",
     file: "CoopCatchupTeleport.clawedmod",
     name: "Co-op Catch-up Teleport",
-    role: "Manual-only co-op catch-up teleport hotfix",
+    role: "Manual-only host-smart diagnostic co-op catch-up teleport hotfix",
     loader: "ue4ss",
     validation:
-      "Manual-only N-player hotfix package; automatic start/load hooks are disabled and multiplayer teleport behavior is still unvalidated."
+      "Manual-only host-smart N-player diagnostic hotfix package; automatic start/load hooks are disabled and multiplayer teleport behavior is still unvalidated."
   }
 ];
 
@@ -175,7 +175,7 @@ function readme() {
     "",
     "- `ModsActiveTitleLogo.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route.",
     "- `CoopSessionGuard.clawedmod`: UE4SS co-op session guard prototype with guarded session commands, failure logging, and no package-level player-count cap.",
-    "- `CoopCatchupTeleport.clawedmod`: manual-only N-player UE4SS co-op catch-up teleport hotfix; automatic start/load hooks are disabled.",
+    "- `CoopCatchupTeleport.clawedmod`: manual-only host-smart diagnostic N-player UE4SS co-op catch-up teleport hotfix; automatic start/load hooks are disabled.",
     "",
     "Boundaries:",
     "",

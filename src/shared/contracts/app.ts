@@ -503,6 +503,35 @@ export type CreatorAssetMetadataV1 = z.infer<
   typeof CreatorAssetMetadataV1Schema
 >;
 
+export const ClawedModPackageIdentitySourceSchema = z.enum([
+  "author",
+  "cmmGenerated",
+  "externalImport",
+  "creatorExport",
+  "manual"
+]);
+export type ClawedModPackageIdentitySource = z.infer<
+  typeof ClawedModPackageIdentitySourceSchema
+>;
+
+export const ClawedModPackageIdentityV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: z
+      .string()
+      .min(3)
+      .max(160)
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._:-]*$/,
+        "Package identity IDs must use letters, numbers, dot, underscore, colon, or hyphen."
+      ),
+    source: ClawedModPackageIdentitySourceSchema
+  })
+  .strict();
+export type ClawedModPackageIdentityV1 = z.infer<
+  typeof ClawedModPackageIdentityV1Schema
+>;
+
 export const ClawedModManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
@@ -517,6 +546,7 @@ export const ClawedModManifestV1Schema = z
     conflicts: z.array(z.string().min(1)),
     loadAfter: z.array(z.string().min(1)),
     loadBefore: z.array(z.string().min(1)),
+    packageIdentity: ClawedModPackageIdentityV1Schema.optional(),
     creatorAssets: CreatorAssetMetadataV1Schema.optional()
   })
   .strict()
@@ -1310,6 +1340,7 @@ export const InstalledModVersionSchema = z.object({
   description: z.string(),
   loader: ModLoaderSchema,
   sha256: z.string(),
+  packageIdentityId: z.string().min(1).nullable().optional(),
   enabled: z.boolean(),
   installPath: z.string(),
   packagePath: z.string(),
@@ -1340,9 +1371,22 @@ export const ModLibrarySnapshotSchema = z.object({
 });
 export type ModLibrarySnapshot = z.infer<typeof ModLibrarySnapshotSchema>;
 
-export const ImportModPackageRequestSchema = z.object({
-  packagePath: z.string().min(1)
-});
+export const PackageIdentityReplacementRequestSchema = z
+  .object({
+    action: z.literal("replaceMatchingIdentity"),
+    packageIdentityId: z.string().min(1)
+  })
+  .strict();
+export type PackageIdentityReplacementRequest = z.infer<
+  typeof PackageIdentityReplacementRequestSchema
+>;
+
+export const ImportModPackageRequestSchema = z
+  .object({
+    packagePath: z.string().min(1),
+    replacement: PackageIdentityReplacementRequestSchema.optional()
+  })
+  .strict();
 export type ImportModPackageRequest = z.infer<
   typeof ImportModPackageRequestSchema
 >;
@@ -1352,9 +1396,12 @@ export const ImportModPackageResultSchema = z.object({
     "installed",
     "alreadyInstalled",
     "duplicateDifferentHash",
+    "needsReplacementConfirmation",
     "failed"
   ]),
   mod: InstalledModVersionSchema.nullable(),
+  packageIdentityId: z.string().min(1).nullable().optional(),
+  replacementCandidates: z.array(InstalledModVersionSchema).optional(),
   problems: z.array(ModProblemSchema)
 });
 export type ImportModPackageResult = z.infer<
