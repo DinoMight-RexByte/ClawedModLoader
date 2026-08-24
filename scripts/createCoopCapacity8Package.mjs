@@ -12,7 +12,7 @@ import {
 
 const modId = "CoopCapacity8";
 const modName = "Co-op Capacity 8";
-const version = "0.1.0-prototype.20260822";
+const version = "0.1.1-prototype.20260824";
 const targetCapacity = 8;
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
@@ -22,10 +22,13 @@ const outputRoot = path.resolve(
   process.env.CMM_COOP_CAPACITY8_OUTPUT_DIR ?? path.join(releaseRoot, "prototype-mods")
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
-const lua = String.raw`local marker = "[CoopCapacity8] "
+const lua = String.raw`local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
+local marker = "[CoopCapacity8] "
+local version = "0.1.1-prototype.20260824"
 local target_capacity = 8
 local unpack_fn = table.unpack or unpack
 local last_apply_summary = "not_applied"
+local last_verify_summary = "not_verified"
 local capacity_props = {
     "MaxPlayerCount",
     "MaxPlayerCountValue",
@@ -76,6 +79,17 @@ local slider_setters = {
     "SetMaxValue",
     "SetMaxSliderValue",
     "SetValue"
+}
+local scan_classes = {
+    "BP_MenuSystemGameInstance_FDG_C",
+    "GameInstance",
+    "WBP_HostMultiplayer_C",
+    "WBP_HostMultiplayerMenu_C",
+    "GameSession",
+    "GameSession_C",
+    "GameMode",
+    "GameModeBase",
+    "GameStateBase"
 }
 
 local function log(event, value)
@@ -167,42 +181,87 @@ local function find_first(class_name_value)
     return nil
 end
 
-local function apply_slider(slider, source, label)
+local function get_world()
+    if ok_helpers and UEHelpers.GetWorld ~= nil then
+        local ok, world = pcall(function() return UEHelpers.GetWorld() end)
+        if ok and is_valid(world) then return world end
+    end
+    return find_first("World")
+end
+
+local function net_mode_label()
+    local ok, mode = call_method(get_world(), "GetNetMode")
+    if ok then return text(mode) end
+    return "unknown"
+end
+
+local function capacity_environment(source)
+    local parts = {
+        "world=" .. full_name(get_world()),
+        "net_mode=" .. net_mode_label()
+    }
+    for _, class_name_value in ipairs(scan_classes) do
+        local count = 0
+        for _, object in pairs(find_all(class_name_value)) do
+            if is_valid(object) then count = count + 1 end
+        end
+        table.insert(parts, class_name_value .. "=" .. tostring(count))
+    end
+    log("capacity_environment", tostring(source) .. "|" .. table.concat(parts, "|"))
+end
+
+local function apply_slider(slider, source, label, dry_run)
     slider = unwrap(slider)
     if not is_valid(slider) then return 0 end
     local changed = 0
     for _, method_name in ipairs(slider_setters) do
-        local ok, detail = call_method(slider, method_name, target_capacity)
+        local ok, detail = false, "dry_run_skipped"
+        if dry_run ~= true then ok, detail = call_method(slider, method_name, target_capacity) end
         log("slider_method", tostring(source) .. "|label=" .. tostring(label) .. "|method=" .. method_name .. "|ok=" .. tostring(ok) .. "|detail=" .. tostring(detail) .. "|object=" .. full_name(slider))
         if ok then changed = changed + 1 end
     end
     for _, prop_name in ipairs({ "MaxValue", "MaxSliderValue", "Value" }) do
-        local ok, detail = set_existing_prop(slider, prop_name, target_capacity)
+        local ok, detail
+        if dry_run == true then
+            local existing = get_prop(slider, prop_name)
+            ok = existing ~= nil
+            detail = "dry_run|current=" .. text(existing)
+        else
+            ok, detail = set_existing_prop(slider, prop_name, target_capacity)
+        end
         log("slider_property", tostring(source) .. "|label=" .. tostring(label) .. "|property=" .. prop_name .. "|ok=" .. tostring(ok) .. "|detail=" .. tostring(detail) .. "|object=" .. full_name(slider))
         if ok then changed = changed + 1 end
     end
     return changed
 end
 
-local function apply_object(object, source)
+local function apply_object(object, source, dry_run)
     object = unwrap(object)
     if not is_valid(object) then return 0 end
     local changed = 0
     log("object_scan", tostring(source) .. "|object=" .. full_name(object) .. "|class=" .. class_name(object))
     for _, prop_name in ipairs(capacity_props) do
-        local ok, detail = set_existing_prop(object, prop_name, target_capacity)
+        local ok, detail
+        if dry_run == true then
+            local existing = get_prop(object, prop_name)
+            ok = existing ~= nil
+            detail = "dry_run|current=" .. text(existing)
+        else
+            ok, detail = set_existing_prop(object, prop_name, target_capacity)
+        end
         if ok then changed = changed + 1 end
         log("capacity_property", tostring(source) .. "|property=" .. prop_name .. "|ok=" .. tostring(ok) .. "|detail=" .. tostring(detail) .. "|object=" .. full_name(object))
     end
     for _, method_name in ipairs(setter_names) do
-        local ok, detail = call_method(object, method_name, target_capacity)
+        local ok, detail = false, "dry_run_skipped"
+        if dry_run ~= true then ok, detail = call_method(object, method_name, target_capacity) end
         if ok then changed = changed + 1 end
         log("capacity_method", tostring(source) .. "|method=" .. method_name .. "|ok=" .. tostring(ok) .. "|detail=" .. tostring(detail) .. "|object=" .. full_name(object))
     end
     for _, slider_name in ipairs(slider_props) do
         local slider = get_prop(object, slider_name)
         if is_valid(slider) then
-            changed = changed + apply_slider(slider, source, slider_name)
+            changed = changed + apply_slider(slider, source, slider_name, dry_run)
         else
             log("slider_missing", tostring(source) .. "|property=" .. slider_name .. "|object=" .. full_name(object))
         end
@@ -210,43 +269,114 @@ local function apply_object(object, source)
     return changed
 end
 
-local function scan_class(source, class_name_value)
+local function scan_class(source, class_name_value, dry_run, seen)
     local changed = 0
     local count = 0
     for _, object in pairs(find_all(class_name_value)) do
         if is_valid(object) then
             count = count + 1
-            if count <= 16 then changed = changed + apply_object(object, tostring(source) .. "|class=" .. class_name_value .. "|idx=" .. tostring(count)) end
+            local key = full_name(object)
+            if count <= 16 and (seen == nil or seen[key] ~= true) then
+                if seen ~= nil then seen[key] = true end
+                changed = changed + apply_object(object, tostring(source) .. "|class=" .. class_name_value .. "|idx=" .. tostring(count), dry_run)
+            end
         end
     end
     log("class_scan", tostring(source) .. "|class=" .. class_name_value .. "|count=" .. tostring(count) .. "|changed=" .. tostring(changed))
     return changed, count
 end
 
-local function apply_capacity(source, ...)
+local function verify_object(object, source)
+    object = unwrap(object)
+    if not is_valid(object) then return 0, 0 end
+    local checked = 0
+    local matched = 0
+    for _, prop_name in ipairs(capacity_props) do
+        local value = get_prop(object, prop_name)
+        if value ~= nil then
+            checked = checked + 1
+            if tonumber(value) == target_capacity then matched = matched + 1 end
+            log("capacity_verify_property", tostring(source) .. "|property=" .. prop_name .. "|match=" .. tostring(tonumber(value) == target_capacity) .. "|value=" .. text(value) .. "|object=" .. full_name(object))
+        end
+    end
+    for _, slider_name in ipairs(slider_props) do
+        local slider = get_prop(object, slider_name)
+        if is_valid(slider) then
+            for _, prop_name in ipairs({ "MaxValue", "MaxSliderValue", "Value" }) do
+                local value = get_prop(slider, prop_name)
+                if value ~= nil then
+                    checked = checked + 1
+                    if tonumber(value) == target_capacity then matched = matched + 1 end
+                    log("capacity_verify_slider", tostring(source) .. "|slider=" .. slider_name .. "|property=" .. prop_name .. "|match=" .. tostring(tonumber(value) == target_capacity) .. "|value=" .. text(value) .. "|object=" .. full_name(slider))
+                end
+            end
+        end
+    end
+    return checked, matched
+end
+
+local function verify_capacity(source)
+    local checked = 0
+    local matched = 0
+    local scanned = 0
+    local seen = {}
+    local function verify_once(object, label)
+        object = unwrap(object)
+        if not is_valid(object) then return end
+        local key = full_name(object)
+        if seen[key] == true then return end
+        seen[key] = true
+        scanned = scanned + 1
+        local object_checked, object_matched = verify_object(object, label)
+        checked = checked + object_checked
+        matched = matched + object_matched
+    end
+    verify_once(find_first("BP_MenuSystemGameInstance_FDG_C") or find_first("GameInstance"), tostring(source) .. "|game_instance")
+    for _, class_name_value in ipairs(scan_classes) do
+        local count = 0
+        for _, object in pairs(find_all(class_name_value)) do
+            if is_valid(object) then
+                count = count + 1
+                if count <= 16 then verify_once(object, tostring(source) .. "|class=" .. class_name_value .. "|idx=" .. tostring(count)) end
+            end
+        end
+    end
+    last_verify_summary = "source=" .. tostring(source) .. "|target_capacity=" .. tostring(target_capacity) .. "|objects_scanned=" .. tostring(scanned) .. "|checked=" .. tostring(checked) .. "|matched=" .. tostring(matched)
+    log("capacity_verify", last_verify_summary)
+    return checked, matched
+end
+
+local function apply_capacity(source, dry_run, ...)
     local total_changed = 0
     local scanned = 0
     local explicit_args = { ... }
-    local game_instance = find_first("BP_MenuSystemGameInstance_FDG_C") or find_first("GameInstance")
-    if is_valid(game_instance) then
-        total_changed = total_changed + apply_object(game_instance, tostring(source) .. "|game_instance")
+    local seen = {}
+    capacity_environment(source)
+    local function apply_once(object, label)
+        object = unwrap(object)
+        if not is_valid(object) then return end
+        local key = full_name(object)
+        if seen[key] == true then return end
+        seen[key] = true
+        total_changed = total_changed + apply_object(object, label, dry_run)
         scanned = scanned + 1
     end
-    for _, class_name_value in ipairs({ "WBP_HostMultiplayer_C", "WBP_HostMultiplayerMenu_C", "GameSession", "GameModeBase" }) do
-        local changed, count = scan_class(source, class_name_value)
+    local game_instance = find_first("BP_MenuSystemGameInstance_FDG_C") or find_first("GameInstance")
+    apply_once(game_instance, tostring(source) .. "|game_instance")
+    for _, class_name_value in ipairs(scan_classes) do
+        local changed, count = scan_class(source, class_name_value, dry_run, seen)
         total_changed = total_changed + changed
         scanned = scanned + count
     end
     for i = 1, #explicit_args do
         local value = unwrap(explicit_args[i])
         if is_valid(value) then
-            total_changed = total_changed + apply_object(value, tostring(source) .. "|arg=" .. tostring(i))
-            scanned = scanned + 1
+            apply_once(value, tostring(source) .. "|arg=" .. tostring(i))
         else
             log("arg_scan", tostring(source) .. "|idx=" .. tostring(i) .. "|value=" .. text(value))
         end
     end
-    last_apply_summary = "source=" .. tostring(source) .. "|target_capacity=" .. tostring(target_capacity) .. "|objects_scanned=" .. tostring(scanned) .. "|changes=" .. tostring(total_changed)
+    last_apply_summary = "source=" .. tostring(source) .. "|dry_run=" .. tostring(dry_run == true) .. "|target_capacity=" .. tostring(target_capacity) .. "|objects_scanned=" .. tostring(scanned) .. "|changes=" .. tostring(total_changed)
     log("capacity_apply", last_apply_summary)
     return total_changed
 end
@@ -284,13 +414,26 @@ local function register_command(name, fn)
 end
 
 register_command("cmm_coop_capacity8", function(full_command, parameters, ar)
-    local changes = apply_capacity("console", full_command, parameters)
+    local changes = apply_capacity("console", false, full_command, parameters)
+    verify_capacity("console_after_apply")
     console_reply(ar, "cmm_coop_capacity8|target_capacity=" .. tostring(target_capacity) .. "|changes=" .. tostring(changes))
     return true
 end)
 
+register_command("cmm_coop_capacity8_scan", function(full_command, parameters, ar)
+    local matches = apply_capacity("console_scan", true, full_command, parameters)
+    console_reply(ar, "cmm_coop_capacity8_scan|target_capacity=" .. tostring(target_capacity) .. "|matches=" .. tostring(matches))
+    return true
+end)
+
+register_command("cmm_coop_capacity8_verify", function(full_command, parameters, ar)
+    local checked, matched = verify_capacity("console_verify")
+    console_reply(ar, "cmm_coop_capacity8_verify|target_capacity=" .. tostring(target_capacity) .. "|checked=" .. tostring(checked) .. "|matched=" .. tostring(matched))
+    return true
+end)
+
 register_command("cmm_coop_capacity8_status", function(full_command, parameters, ar)
-    console_reply(ar, "cmm_coop_capacity8_status|" .. last_apply_summary)
+    console_reply(ar, "cmm_coop_capacity8_status|" .. last_apply_summary .. "|" .. last_verify_summary)
     return true
 end)
 
@@ -300,8 +443,9 @@ register_hook("GI_CreateFriendsSession", gi_class .. ":Create  Friends Session",
 register_hook("GI_LoadSessionLevel", gi_class .. ":Load Session Level", function(self, ...) apply_capacity("GI_LoadSessionLevel", self, ...) end)
 register_hook("WBP_Host_LoadSessionLevel", host_widget .. ":Load Session Level", function(self, ...) apply_capacity("WBP_Host_LoadSessionLevel", self, ...) end)
 
-apply_capacity("startup")
-log("startup", "version=0.1.0-prototype.20260822|target_capacity=" .. tostring(target_capacity))`;
+apply_capacity("startup", false)
+verify_capacity("startup_after_apply")
+log("startup", "version=" .. version .. "|target_capacity=" .. tostring(target_capacity))`;
 const readme = [
   "# Co-op Capacity 8",
   "",
@@ -312,14 +456,21 @@ const readme = [
   "- Targets the observed multiplayer flow around `BP_MenuSystemGameInstance_FDG`, `WBP_HostMultiplayer`, `GameSession`, and `GameModeBase`.",
   "- Before host/session creation and host-level travel, writes known max-player, public-connection, party-size, slot, and capacity fields to `8` when those fields exist.",
   "- Raises the observed `MaxPlayerCountSlider` and adjacent player-count slider/spinbox objects to `8` when they exist.",
+  "- Logs `capacity_environment` before scans with world, net mode, and relevant class counts.",
+  "- Provides `cmm_coop_capacity8_scan` to inspect target objects without mutating them.",
+  "- Provides `cmm_coop_capacity8_verify` to read back capacity-related fields and report how many equal `8`.",
   "- Logs every property, method, slider, and object scan to `UE4SS.log` with `[CoopCapacity8]` markers.",
-  "- Provides `cmm_coop_capacity8` to reapply the capacity patch manually and `cmm_coop_capacity8_status` to print the last apply summary.",
+  "- Provides `cmm_coop_capacity8` to reapply the capacity patch manually and `cmm_coop_capacity8_status` to print the last apply and verify summaries.",
+  "- Declares a conflict with the legacy `ClawedCoopCapacity8` package ID and loads before `CoopSessionGuard` when both packages are enabled.",
   "",
   "Expected support markers:",
   "",
   "- `[CoopCapacity8] startup|...`",
   "- `[CoopCapacity8] hook_register|...`",
+  "- `[CoopCapacity8] capacity_environment|...`",
   "- `[CoopCapacity8] capacity_apply|...`",
+  "- `[CoopCapacity8] capacity_verify|...`",
+  "- `[CoopCapacity8] capacity_verify_property|...`",
   "- `[CoopCapacity8] object_scan|...`",
   "- `[CoopCapacity8] capacity_property|...`",
   "- `[CoopCapacity8] slider_method|...`",
@@ -348,7 +499,7 @@ const manifest = {
   game: "clawed",
   loader: "ue4ss",
   dependencies: [],
-  conflicts: [],
+  conflicts: ["ClawedCoopCapacity8"],
   loadAfter: [],
   loadBefore: ["CoopSessionGuard"],
   packageIdentity: generatedPackageIdentity(modId),
@@ -419,12 +570,22 @@ async function writePackage(outputDirectory) {
       "UE4SS Lua package structure only",
       "Attempts to raise host/session-facing co-op capacity fields to 8",
       "Runs before observed Create Friends Session and Load Session Level calls",
+      "Provides dry-run scan and readback verification commands",
+      "Conflicts with legacy ClawedCoopCapacity8 package identity",
       "No executable, Steam, EOS, anti-cheat, game DLL, cooked asset, NetDriver, GameMode asset, or PlayerController asset patching",
       "Eight-player host/client behavior unvalidated"
     ],
-    consoleCommands: ["cmm_coop_capacity8", "cmm_coop_capacity8_status"],
+    consoleCommands: [
+      "cmm_coop_capacity8",
+      "cmm_coop_capacity8_scan",
+      "cmm_coop_capacity8_verify",
+      "cmm_coop_capacity8_status"
+    ],
     logMarkers: [
+      "[CoopCapacity8] capacity_environment|...",
       "[CoopCapacity8] capacity_apply|...",
+      "[CoopCapacity8] capacity_verify|...",
+      "[CoopCapacity8] capacity_verify_property|...",
       "[CoopCapacity8] capacity_property|...",
       "[CoopCapacity8] slider_method|...",
       "[CoopCapacity8] class_scan|..."

@@ -56,4 +56,17 @@ describe("release build config", () => {
       "npm run package && npm run package:official-launch-mods"
     );
   });
+
+  it("includes all generated user-facing mods in the dist command", () => {
+    expect(packageJson.scripts["package:available-mods"]).toBe(
+      "npm run package:manual-qa && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
+    );
+    expect(packageJson.scripts.dist).toContain("npm run package:available-mods");
+    expect(packageJson.scripts["package:available-mods"]).not.toContain(
+      "package:coop-reliability-plugin"
+    );
+    expect(packageJson.scripts["package:available-mods"]).not.toContain(
+      "package:optimization-dev-plugins"
+    );
+  });
 });

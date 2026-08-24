@@ -28,10 +28,10 @@ const packages = [
     id: "CoopSessionGuard",
     file: "CoopSessionGuard.clawedmod",
     name: "Co-op Session Guard",
-    role: "Co-op session diagnostics and guarded recovery",
+    role: "Co-op session diagnostics, guarded recovery, and lifecycle-safe snapshots",
     loader: "ue4ss",
     validation:
-      "Prototype package; multi-client supported-party-size host/join validation is still required."
+      "Prototype package with broad lifecycle hooks disabled; multi-client supported-party-size host/join validation is still required."
   },
   {
     id: "CoopCatchupTeleport",
@@ -174,7 +174,7 @@ function readme() {
     "Included packages:",
     "",
     "- `ModsActiveTitleLogo.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route.",
-    "- `CoopSessionGuard.clawedmod`: UE4SS co-op session guard prototype with guarded session commands, failure logging, and no package-level player-count cap.",
+    "- `CoopSessionGuard.clawedmod`: UE4SS co-op session guard prototype with guarded session commands, failure logging, broad lifecycle hooks disabled, and no package-level player-count cap.",
     "- `CoopCatchupTeleport.clawedmod`: manual-only host-smart diagnostic N-player UE4SS co-op catch-up teleport hotfix; automatic start/load hooks are disabled.",
     "",
     "Boundaries:",
