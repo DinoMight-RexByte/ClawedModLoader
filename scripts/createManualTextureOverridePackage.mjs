@@ -23,9 +23,9 @@ const execFileAsync = promisify(execFile);
 const defaultTargetPackagePaths = [
   "/Game/MenuSystemPro/ExampleContent/Art/Textures/Logos/Library_Logo"
 ];
-const modId = process.env.CMM_TEXTURE_OVERRIDE_ID ?? "CMMClawedTitleLogoOnly";
+const modId = process.env.CMM_TEXTURE_OVERRIDE_ID ?? "ModsActiveTitleLogo";
 const modName =
-  process.env.CMM_TEXTURE_OVERRIDE_NAME ?? "CMM Clawed Title Logo Only";
+  process.env.CMM_TEXTURE_OVERRIDE_NAME ?? "Mods Active Title Logo";
 const sourceImage =
   process.env.CMM_TEXTURE_OVERRIDE_SOURCE ??
   path.join(process.env.USERPROFILE ?? "", "Downloads", "Clawed Mods Active.png");

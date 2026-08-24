@@ -218,6 +218,12 @@ describe("diagnostics service", () => {
           evidencePath: null,
           recording: null,
           problems: []
+        }),
+        cancel: async () => ({
+          status: "blocked" as const,
+          evidencePath: null,
+          recording: null,
+          problems: []
         })
       },
       unrealMappingsService: {

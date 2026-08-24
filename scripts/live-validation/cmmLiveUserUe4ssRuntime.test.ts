@@ -404,7 +404,7 @@ async function launchClawedThroughSteam(): Promise<void> {
 async function requestClawedClose(): Promise<void> {
   await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' })",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' })",
       "foreach ($process in $processes) { [void]$process.CloseMainWindow() }",
       "$processes.Count"
     ].join("; ")
@@ -429,7 +429,7 @@ async function waitForNoClawedProcesses(timeoutMs: number): Promise<ProcessInfo[
 async function getClawedProcesses(): Promise<ProcessInfo[]> {
   const output = await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' } | Select-Object Id, ProcessName, MainWindowTitle)",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' } | Select-Object Id, ProcessName, MainWindowTitle)",
       "if ($processes.Count -eq 0) { '[]' } else { $processes | ConvertTo-Json -Compress }"
     ].join("; ")
   );
@@ -468,7 +468,12 @@ async function inspectRuntimeResidue(runtimeRoot: string): Promise<string[]> {
     "UE4SS-settings.ini",
     "UE4SS.log",
     "Mods",
-    "ue4ss"
+    path.join("ue4ss", "dwmapi.dll"),
+    path.join("ue4ss", "UE4SS.dll"),
+    path.join("ue4ss", "UE4SS-settings.ini"),
+    path.join("ue4ss", "UE4SS.log"),
+    path.join("ue4ss", "Mods"),
+    path.join("ue4ss", "UE4SS_Signatures")
   ];
   const residue: string[] = [];
 

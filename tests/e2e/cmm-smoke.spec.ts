@@ -113,8 +113,9 @@ test.beforeEach(async ({ page }) => {
     };
     const bundledRuntime = {
       ue4ss: {
-        version: "ue4ss-v3.0.1-lts",
-        installPath: "C:\\CMM\\runtime\\ue4ss\\ue4ss-v3.0.1-lts",
+        version: "ue4ss-v3.0.1-1028-gd7e7826d",
+        installPath:
+          "C:\\CMM\\runtime\\ue4ss\\ue4ss-v3.0.1-1028-gd7e7826d",
         importedAt: now,
         sourceSha256: "1".repeat(64),
         source: "bundled",
@@ -126,7 +127,7 @@ test.beforeEach(async ({ page }) => {
           severity: "warning",
           code: "UE4SS_BUNDLED_RUNTIME_UNVALIDATED",
           message:
-            "Packaged UE4SS v3.0.1 LTS has not been validated for this Clawed build."
+            "Packaged UE4SS v3.0.1-1028-gd7e7826d has not been validated for this Clawed build."
         }
       ]
     };
@@ -510,6 +511,7 @@ test.beforeEach(async ({ page }) => {
     const activeSummary = () =>
       state.profiles.find((profile) => profile.id === state.activeProfileId) ??
       state.profiles[0];
+    const playRuntime = () => (window as any).__cmmRuntimeOverride ?? runtime;
     const profileSnapshot = () => ({
       activeProfileId: state.activeProfileId,
       profiles: state.profiles.map((profile) => ({
@@ -1051,29 +1053,40 @@ test.beforeEach(async ({ page }) => {
     (window as any).cmmFileDrops = {
       getPathForFile: (file: File) => file.name
     };
+    const playSnapshot = () => ({
+      activeProfile: {
+        id: activeSummary().id,
+        name: activeSummary().name
+      },
+      gameState: "STOPPED",
+      launchMode: "MODDED",
+      enabledMods: state.mods.filter((mod) => mod.enabled).length,
+      profileValidity: "valid",
+      deploymentState:
+        (window as any).__cmmDeploymentStateOverride ?? "deploymentRequired",
+      runtime: playRuntime(),
+      conflicts: { count: 1, severity: "warning" },
+      discovery,
+      process: {
+        lifecycleState: "STOPPED",
+        processId: null,
+        processName: null,
+        startedAt: null,
+        updatedAt: now
+      },
+      lastCommand: null
+    });
     const cmm: Record<string, any> = {
-      getPlaySnapshot: async () => ({
-        activeProfile: {
-          id: activeSummary().id,
-          name: activeSummary().name
-        },
-        gameState: "STOPPED",
-        launchMode: "MODDED",
-        enabledMods: state.mods.filter((mod) => mod.enabled).length,
-        profileValidity: "valid",
-        deploymentState: "deploymentRequired",
-        runtime,
-        conflicts: { count: 1, severity: "warning" },
-        discovery,
-        process: {
-          lifecycleState: "STOPPED",
-          processId: null,
-          processName: null,
-          startedAt: null,
-          updatedAt: now
-        },
-        lastCommand: null
-      }),
+      getPlaySnapshot: async () => {
+        const nextSnapshot = playSnapshot();
+        const delayMs = Number((window as any).__cmmPlaySnapshotDelayMs ?? 0);
+        if (delayMs > 0) {
+          (window as any).__cmmPlaySnapshotRequests =
+            Number((window as any).__cmmPlaySnapshotRequests ?? 0) + 1;
+          await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+        }
+        return nextSnapshot;
+      },
       runLaunchCommand: async ({
         kind,
         forceCloseConfirmed,
@@ -1438,7 +1451,7 @@ test.beforeEach(async ({ page }) => {
         manifest: null,
         problems: []
       }),
-      getRuntimeSnapshot: async () => runtime,
+      getRuntimeSnapshot: async () => playRuntime(),
       installBundledUe4ssRuntime: async () => {
         runtime = bundledRuntime;
         return {
@@ -1448,6 +1461,35 @@ test.beforeEach(async ({ page }) => {
         };
       },
       validatePackagedRuntime: async () => {
+        (window as any).__cmmRuntimeValidationStarted = true;
+        const delayMs = Number((window as any).__cmmValidationDelayMs ?? 0);
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < delayMs) {
+          if ((window as any).__cmmRuntimeValidationCancelRequested) {
+            await new Promise((resolve) => window.setTimeout(resolve, 500));
+            (window as any).__cmmRuntimeValidationCancelled = true;
+            return {
+              status: "cancelled",
+              evidencePath: "C:\\CMM\\logs\\runtime-validation\\cancelled",
+              recording: null,
+              problems: [
+                {
+                  severity: "warning",
+                  code: "RUNTIME_VALIDATION_CANCELLED",
+                  message: "Packaged runtime validation was cancelled."
+                }
+              ]
+            };
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
+        }
+        const validationOverride = (window as any).__cmmRuntimeValidationResult;
+        if (validationOverride) {
+          if (validationOverride.runtimeOverride) {
+            runtime = validationOverride.runtimeOverride;
+          }
+          return validationOverride.result ?? validationOverride;
+        }
         runtime = {
           ue4ss: {
             ...bundledRuntime.ue4ss,
@@ -1466,6 +1508,21 @@ test.beforeEach(async ({ page }) => {
             problems: []
           },
           problems: []
+        };
+      },
+      cancelPackagedRuntimeValidation: async () => {
+        (window as any).__cmmRuntimeValidationCancelRequested = true;
+        return {
+          status: "cancelled",
+          evidencePath: "C:\\CMM\\logs\\runtime-validation\\cancelled",
+          recording: null,
+          problems: [
+            {
+              severity: "warning",
+              code: "RUNTIME_VALIDATION_CANCEL_REQUESTED",
+              message: "Packaged runtime validation is cancelling."
+            }
+          ]
         };
       },
       importUe4ssRuntime: async () => ({
@@ -2276,6 +2333,221 @@ test("validates an unvalidated packaged runtime from Play", async ({
     .poll(() => page.evaluate(() => (window as any).__cmmRuntimeValidated))
     .toBe(true);
   await expect(page.getByRole("button", { name: "Validate" })).toBeHidden();
+});
+
+test("refreshes Play after packaged runtime validation is already complete", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(async () => {
+    const validatedRuntime = {
+      ue4ss: {
+        version: "ue4ss-v3.0.1-1028-gd7e7826d",
+        installPath:
+          "C:\\CMM\\runtime\\ue4ss\\ue4ss-v3.0.1-1028-gd7e7826d",
+        importedAt: "2026-08-11T12:00:00.000Z",
+        sourceSha256: "1".repeat(64),
+        source: "bundled",
+        releaseValidation: "VALIDATED",
+        validation: {
+          status: "VALIDATED",
+          validatedAt: "2026-08-22T23:52:16.896Z",
+          steamBuildId: "24782175",
+          fingerprintSha256: "f".repeat(64),
+          evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+          markerModId: "CMMPackagedRuntimeValidation",
+          sourceSha256: "1".repeat(64),
+          details: "Minimal read-only Lua startup marker passed."
+        }
+      },
+      status: "validated",
+      problems: []
+    };
+    (window as any).__cmmRuntimeValidationResult = {
+      runtimeOverride: validatedRuntime,
+      result: {
+        status: "blocked",
+        evidencePath: "C:\\CMM\\logs\\runtime-validation\\already-valid",
+        recording: null,
+        problems: [
+          {
+            severity: "warning",
+            code: "UE4SS_RUNTIME_VALIDATION_NOT_REQUIRED",
+            message: "The packaged UE4SS runtime is not in an unvalidated state."
+          }
+        ]
+      }
+    };
+    await (window as any).cmm.installBundledUe4ssRuntime();
+  });
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await expect(page.getByRole("button", { name: "Validate" })).toBeVisible();
+  await page.getByRole("button", { name: "Validate" }).click();
+
+  await expect(page.getByText("Runtime already validated")).toBeVisible();
+  await expect(page.getByText("Runtime validation blocked")).toBeHidden();
+  await expect(page.getByRole("button", { name: "Validate" })).toBeHidden();
+});
+
+test("keeps validated runtime state when an older Play refresh returns late", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(() => (window as any).cmm.installBundledUe4ssRuntime());
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await expect(page.getByRole("button", { name: "Validate" })).toBeVisible();
+  await page.evaluate(() => {
+    (window as any).__cmmPlaySnapshotDelayMs = 750;
+    (window as any).__cmmPlaySnapshotRequests = 0;
+  });
+  await page.getByRole("button", { exact: true, name: "Refresh" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__cmmPlaySnapshotRequests))
+    .toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Validate" }).click();
+
+  await expect(page.getByText("Runtime validated")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Validate" })).toBeHidden();
+});
+
+test("keeps packaged runtime validation available for bundled incompatible evidence", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(() => {
+    (window as any).__cmmDeploymentStateOverride = "runtimeIncompatible";
+    (window as any).__cmmRuntimeOverride = {
+      ue4ss: {
+        version: "ue4ss-v3.0.1-1028-gd7e7826d",
+        installPath:
+          "C:\\CMM\\runtime\\ue4ss\\ue4ss-v3.0.1-1028-gd7e7826d",
+        importedAt: "2026-08-11T12:00:00.000Z",
+        sourceSha256: "1".repeat(64),
+        source: "bundled",
+        releaseValidation: "INCOMPATIBLE"
+      },
+      status: "incompatible",
+      problems: [
+        {
+          severity: "error",
+          code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+          message:
+            "The packaged UE4SS runtime failed validation against this Clawed build.",
+          technicalDetail:
+            "Missing signatures: GUObjectArray. Evidence: C:\\CMM\\logs\\runtime-validation\\failed."
+        }
+      ]
+    };
+  });
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await expect(page.getByText("Runtime Incompatible")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Validate" })).toBeVisible();
+});
+
+test("shows packaged runtime validation technical detail on incompatible failure", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(async () => {
+    (window as any).__cmmRuntimeValidationResult = {
+      status: "incompatible",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: [
+        {
+          severity: "error",
+          code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+          message:
+            "The packaged UE4SS runtime failed validation against this Clawed build.",
+          technicalDetail:
+            "UE4SS pattern scan failed before the packaged validation Lua marker could run. Missing signatures: GUObjectArray, FText::FText(FString&&). Evidence: C:\\CMM\\logs\\runtime-validation\\run."
+        }
+      ]
+    };
+    await (window as any).cmm.installBundledUe4ssRuntime();
+  });
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await page.getByRole("button", { name: "Validate" }).click();
+
+  await expect(page.getByText("UE4SS signatures required")).toBeVisible();
+  await expect(page.getByText(/restored to vanilla/)).toBeVisible();
+  await expect(
+    page.getByText(/Missing signatures: GUObjectArray/)
+  ).toBeVisible();
+  await expect(
+    page.getByText(/C:\\CMM\\logs\\runtime-validation\\run/)
+  ).toBeVisible();
+});
+
+test("shows packaged runtime validation progress while validation is running", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(async () => {
+    (window as any).__cmmDeploymentStateOverride = "runtimeIncompatible";
+    (window as any).__cmmValidationDelayMs = 1_500;
+    await (window as any).cmm.installBundledUe4ssRuntime();
+  });
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await page.getByRole("button", { name: "Validate" }).click();
+
+  await expect(
+    page.getByRole("status", {
+      name: "Packaged runtime validation is running"
+    })
+  ).toBeVisible();
+  await expect(page.getByText("Validating packaged runtime")).toBeVisible();
+  await expect(page.getByText("Validation Running")).toBeVisible();
+  await expect(page.getByText("Runtime Incompatible")).toBeHidden();
+  await expect(
+    page.getByText(/launching Clawed through Steam/)
+  ).toBeVisible();
+  await expect(page.getByText(/Elapsed \d+:\d{2}/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Validating" })).toBeDisabled();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__cmmRuntimeValidationStarted))
+    .toBe(true);
+  await expect(page.getByText("Runtime validated")).toBeVisible();
+});
+
+test("cancels packaged runtime validation from Play", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.evaluate(async () => {
+    (window as any).__cmmValidationDelayMs = 5_000;
+    await (window as any).cmm.installBundledUe4ssRuntime();
+  });
+  await page.getByRole("button", { exact: true, name: "Play" }).click();
+
+  await page.getByRole("button", { name: "Validate" }).click();
+  await expect(page.getByText("Validating packaged runtime")).toBeVisible();
+  await page.getByRole("button", { name: "Cancel" }).click();
+
+  await expect(
+    page.getByText("Cancelling packaged runtime validation")
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Cancelling" })).toBeDisabled();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__cmmRuntimeValidationCancelRequested)
+    )
+    .toBe(true);
+  await expect(page.getByText("Runtime validation cancelled")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__cmmRuntimeValidationCancelled))
+    .toBe(true);
 });
 
 test("runs packaged runtime validation from validation error", async ({

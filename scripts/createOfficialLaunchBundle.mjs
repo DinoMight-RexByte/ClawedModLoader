@@ -17,28 +17,30 @@ const officialZipPath = path.join(
 const hasUnpacked = await exists(unpackedRoot);
 const packages = [
   {
-    id: "CMMClawedTitleLogoOnly",
-    file: "CMMClawedTitleLogoOnly.clawedmod",
-    name: "CMM Clawed Title Logo Only",
+    id: "ModsActiveTitleLogo",
+    file: "ModsActiveTitleLogo.clawedmod",
+    name: "Mods Active Title Logo",
     role: "Mods Active title logo",
     loader: "pak",
     validation: "Generated Pak/IoStore title-logo package; live texture validation is not rerun by this script."
   },
   {
-    id: "ClawedCoopSessionGuard",
-    file: "ClawedCoopSessionGuard.clawedmod",
-    name: "Clawed Co-op Session Coordinator",
+    id: "CoopSessionGuard",
+    file: "CoopSessionGuard.clawedmod",
+    name: "Co-op Session Guard",
     role: "Co-op session diagnostics and guarded recovery",
     loader: "ue4ss",
-    validation: "Prototype package; two-client host/join validation is still required."
+    validation:
+      "Prototype package; multi-client supported-party-size host/join validation is still required."
   },
   {
-    id: "ClawedCoopCatchupTeleport",
-    file: "ClawedCoopCatchupTeleport.clawedmod",
-    name: "Clawed Co-op Catch-up Teleport",
-    role: "Co-op spawn and respawn catch-up prototype",
+    id: "CoopCatchupTeleport",
+    file: "CoopCatchupTeleport.clawedmod",
+    name: "Co-op Catch-up Teleport",
+    role: "Manual-only co-op catch-up teleport hotfix",
     loader: "ue4ss",
-    validation: "Prototype package; multiplayer teleport behavior is still unvalidated."
+    validation:
+      "Manual-only N-player hotfix package; automatic start/load hooks are disabled and multiplayer teleport behavior is still unvalidated."
   }
 ];
 
@@ -149,7 +151,7 @@ async function writeBundleFiles(targetRoot, displayPath) {
       "Packages are included for import; CMM does not auto-install or auto-enable them.",
       "All runtime packages remain normal .clawedmod archives.",
       "No package patches Steam, EOS, executable files, anti-cheat, game DLLs, base GameMode assets, or base PlayerController assets.",
-      "Co-op host/client behavior remains unvalidated until tested in a real two-player session."
+      "Co-op host/client behavior remains unvalidated until tested across Clawed's supported party sizes."
     ]
   };
 
@@ -171,14 +173,14 @@ function readme() {
     "",
     "Included packages:",
     "",
-    "- `CMMClawedTitleLogoOnly.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route.",
-    "- `ClawedCoopSessionGuard.clawedmod`: UE4SS co-op session coordinator prototype with guarded session commands and failure logging.",
-    "- `ClawedCoopCatchupTeleport.clawedmod`: UE4SS co-op catch-up teleport prototype for spawn and respawn distance recovery.",
+    "- `ModsActiveTitleLogo.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route.",
+    "- `CoopSessionGuard.clawedmod`: UE4SS co-op session guard prototype with guarded session commands, failure logging, and no package-level player-count cap.",
+    "- `CoopCatchupTeleport.clawedmod`: manual-only N-player UE4SS co-op catch-up teleport hotfix; automatic start/load hooks are disabled.",
     "",
     "Boundaries:",
     "",
     "- CMM does not auto-install or auto-enable these packages.",
-    "- The co-op packages are prototypes and still require real two-player host/client validation.",
+    "- The co-op packages are prototypes and still require real host/client validation across Clawed's supported party sizes.",
     "- None of these packages patch Steam, EOS, executable files, anti-cheat, game DLLs, base GameMode assets, or base PlayerController assets."
   ].join("\n") + "\n";
 }

@@ -2,9 +2,9 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 
-const modId = "CMMSafeInputSmoke";
+const modId = "SafeInputSmoke";
 const message = "CMM SAFE INPUT SMOKE ACTIVE";
-const readme = `# CMM Safe Input Smoke
+const readme = `# Safe Input Smoke
 
 Minimal manual test package for Clawed Mod Manager.
 
@@ -71,7 +71,7 @@ ExecuteInGameThread(emit)
 const manifest = {
   schemaVersion: 1,
   id: modId,
-  name: "CMM Safe Input Smoke",
+  name: "Safe Input Smoke",
   version: "20260815T110000",
   author: "Clawed Mod Manager",
   description:

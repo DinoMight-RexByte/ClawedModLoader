@@ -618,6 +618,55 @@ describe("deployment and runtime management", () => {
     );
   });
 
+  it("blocks packaged runtime deployment for scoped incompatible metadata", async () => {
+    const {
+      root,
+      deploymentService,
+      modLibraryService,
+      profileService
+    } = await makeServices(undefined, async (serviceRoot) => {
+      const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+      await createBundledNestedRuntimeRoot(bundleRoot);
+      return {
+        bundledUe4ssRuntimePath: bundleRoot,
+        bundledUe4ssVersion: "known-incompatible-runtime",
+        bundledUe4ssCompatibility: {
+          status: "unvalidated",
+          scopedIncompatibilities: [
+            {
+              steamBuildIds: ["24742251"],
+              message:
+                "Packaged UE4SS v3.0.1 LTS cannot initialize on this Clawed build.",
+              technicalDetail:
+                "Missing signatures: GUObjectArray, FText::FText(FString&&)."
+            }
+          ]
+        }
+      };
+    });
+    const discovery = await createFakeSteamGame(root);
+    await importAndEnable(root, modLibraryService, profileService, {
+      id: "core",
+      name: "Core",
+      version: "1.0.0"
+    });
+
+    const result = await deploymentService.prepareModdedDeployment(discovery);
+
+    expect(result.status).toBe("blocked");
+    expect(result.state).toBe("runtimeIncompatible");
+    expect(result.problems[0]).toMatchObject({
+      code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+      technicalDetail: expect.stringContaining("Missing signatures")
+    });
+    expect(await exists(path.join(discovery.gameInstallPath!, "dwmapi.dll"))).toBe(
+      false
+    );
+    expect(
+      await exists(path.join(discovery.gameInstallPath!, "ue4ss", "UE4SS.dll"))
+    ).toBe(false);
+  });
+
   it("stages a temporary packaged runtime validation deployment for a new Steam build", async () => {
     const { root, deploymentService, runtimeManager } = await makeServices(
       undefined,
@@ -656,6 +705,127 @@ describe("deployment and runtime management", () => {
       type: "ue4ss",
       releaseValidation: "UNVALIDATED",
       targetSteamBuildId: "99999999",
+      logicalOrder: [PACKAGED_RUNTIME_VALIDATION_MOD_ID]
+    });
+    await expect(readFile(markerPath, "utf8")).resolves.toContain(
+      "packaged UE4SS runtime validation"
+    );
+
+    const vanilla = await deploymentService.prepareVanillaDeployment(discovery);
+    expect(vanilla.status).toBe("ok");
+    expect(await exists(markerPath)).toBe(false);
+  });
+
+  it("allows explicit packaged runtime validation for scoped incompatible metadata", async () => {
+    const { root, deploymentService, runtimeManager } = await makeServices(
+      undefined,
+      async (serviceRoot) => {
+        const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+        await createBundledNestedRuntimeRoot(bundleRoot);
+        return {
+          bundledUe4ssRuntimePath: bundleRoot,
+          bundledUe4ssVersion: "metadata-retest-runtime",
+          bundledUe4ssCompatibility: {
+            status: "unvalidated",
+            scopedIncompatibilities: [
+              {
+                steamBuildIds: ["24742251"],
+                message:
+                  "Packaged UE4SS v3.0.1 LTS cannot initialize on this Clawed build."
+              }
+            ]
+          }
+        };
+      }
+    );
+    const discovery = await createFakeSteamGame(root);
+    await runtimeManager.installBundledUe4ssRuntime();
+
+    const result =
+      await deploymentService.prepareRuntimeValidationDeployment(discovery);
+    const markerPath = path.join(
+      discovery.gameInstallPath!,
+      "ue4ss",
+      "Mods",
+      PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+      "Scripts",
+      "main.lua"
+    );
+
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("runtimeUnvalidated");
+    expect(
+      result.problems.some(
+        (problem) => problem.code === "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE"
+      )
+    ).toBe(false);
+    expect(result.problems[0].code).toBe("DEPLOYMENT_ADAPTER_MESSAGE");
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      type: "ue4ss",
+      releaseValidation: "UNVALIDATED",
+      targetSteamBuildId: "24742251",
+      logicalOrder: [PACKAGED_RUNTIME_VALIDATION_MOD_ID]
+    });
+    const snapshot = await deploymentService.getSnapshot();
+    expect(snapshot.state).toBe("runtimeUnvalidated");
+    expect(snapshot.activeManifest?.profileId).toBe("cmm-runtime-validation");
+    expect(
+      snapshot.problems.some(
+        (problem) => problem.code === "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE"
+      )
+    ).toBe(false);
+    await expect(readFile(markerPath, "utf8")).resolves.toContain(
+      "packaged UE4SS runtime validation"
+    );
+  });
+
+  it("allows explicit packaged runtime validation after incompatible evidence", async () => {
+    const { root, deploymentService, runtimeManager } = await makeServices(
+      undefined,
+      async (serviceRoot) => {
+        const bundleRoot = path.join(serviceRoot, "bundled-runtime");
+        await createBundledNestedRuntimeRoot(bundleRoot);
+        return {
+          bundledUe4ssRuntimePath: bundleRoot,
+          bundledUe4ssVersion: "retest-packaged-runtime",
+          bundledUe4ssCompatibility: {
+            status: "validated",
+            validatedSteamBuildIds: ["24742251"]
+          }
+        };
+      }
+    );
+    const discovery = await createFakeSteamGame(root);
+    const fingerprint = await new ClawedGameAdapter().getFingerprint(discovery);
+    await runtimeManager.installBundledUe4ssRuntime();
+    await runtimeManager.recordBundledUe4ssRuntimeValidation({
+      status: "INCOMPATIBLE",
+      steamBuildId: fingerprint.steamBuildId,
+      fingerprintSha256: fingerprint.fingerprintSha256,
+      evidencePath: path.join(root, "evidence"),
+      markerModId: PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+      details:
+        "UE4SS pattern scan failed before the packaged validation Lua marker could run."
+    });
+
+    const result =
+      await deploymentService.prepareRuntimeValidationDeployment(discovery);
+    const markerPath = path.join(
+      discovery.gameInstallPath!,
+      "ue4ss",
+      "Mods",
+      PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+      "Scripts",
+      "main.lua"
+    );
+
+    expect(result.status).toBe("ok");
+    expect(result.state).toBe("runtimeUnvalidated");
+    expect(result.manifest?.profileId).toBe("cmm-runtime-validation");
+    expect(result.manifest?.runtimeConfiguration).toMatchObject({
+      type: "ue4ss",
+      releaseValidation: "UNVALIDATED",
+      targetSteamBuildId: "24742251",
       logicalOrder: [PACKAGED_RUNTIME_VALIDATION_MOD_ID]
     });
     await expect(readFile(markerPath, "utf8")).resolves.toContain(

@@ -368,6 +368,10 @@ export function registerIpcHandlers(services: CoreServices): void {
     )
   );
 
+  registerHandler(ipcContracts.cancelPackagedRuntimeValidation, () =>
+    services.packagedRuntimeValidationService.cancel()
+  );
+
   registerHandler(ipcContracts.importUe4ssRuntime, (request) =>
     services.runtimeManager.importUe4ssRuntime(request)
   );

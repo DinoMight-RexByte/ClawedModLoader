@@ -138,6 +138,36 @@ async function exists(targetPath: string): Promise<boolean> {
 }
 
 describe("runtime manager", () => {
+  it("installs the repository packaged UE4SS validation candidate", async () => {
+    const bundledRuntimePath = path.resolve(
+      "assets",
+      "runtime",
+      "ue4ss",
+      "default"
+    );
+    const { manager } = await makeRuntimeManager(bundledRuntimePath);
+    const result = await manager.installBundledUe4ssRuntime();
+
+    expect(result.status).toBe("imported");
+    expect(result.runtime).toMatchObject({
+      source: "bundled",
+      version: "ue4ss-test-bundled",
+      releaseValidation: "UNVALIDATED"
+    });
+    await expect(
+      readFile(path.join(result.runtime!.installPath, "dwmapi.dll"))
+    ).resolves.toBeInstanceOf(Buffer);
+    await expect(
+      readFile(path.join(result.runtime!.installPath, "ue4ss", "UE4SS.dll"))
+    ).resolves.toBeInstanceOf(Buffer);
+    await expect(
+      readFile(
+        path.join(result.runtime!.installPath, "ue4ss", "Mods", "mods.txt"),
+        "utf8"
+      )
+    ).resolves.toContain("CheatManagerEnablerMod : 0");
+  });
+
   it("installs a packaged UE4SS runtime into userData", async () => {
     const { manager, userDataRoot } = await makeRuntimeManagerWithBundle();
 
@@ -275,6 +305,85 @@ describe("runtime manager", () => {
     );
   });
 
+  it("marks scoped packaged runtime compatibility metadata as incompatible", async () => {
+    const fingerprint = "f".repeat(64);
+    const { manager } = await makeRuntimeManagerWithBundle({
+      bundledUe4ssCompatibility: {
+        status: "unvalidated",
+        message: "Packaged runtime needs live validation.",
+        scopedIncompatibilities: [
+          {
+            steamBuildIds: ["24782175"],
+            fingerprintSha256: [fingerprint],
+            message:
+              "Packaged UE4SS v3.0.1 LTS cannot initialize on this Clawed build.",
+            technicalDetail:
+              "Missing signatures: GUObjectArray, FText::FText(FString&&)."
+          }
+        ]
+      }
+    });
+
+    await manager.installBundledUe4ssRuntime();
+    const matchingByBuild = await manager.getRuntimeSnapshot("24782175");
+    const matchingByFingerprint = await manager.getRuntimeSnapshot(
+      null,
+      fingerprint.toUpperCase()
+    );
+    const otherBuild = await manager.getRuntimeSnapshot(
+      "99999999",
+      "e".repeat(64)
+    );
+
+    expect(matchingByBuild.status).toBe("incompatible");
+    expect(matchingByBuild.ue4ss?.releaseValidation).toBe("UNVALIDATED");
+    expect(matchingByBuild.problems[0]).toMatchObject({
+      code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+      technicalDetail: expect.stringContaining("Missing signatures")
+    });
+    expect(matchingByFingerprint.status).toBe("incompatible");
+    expect(matchingByFingerprint.problems[0].code).toBe(
+      "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE"
+    );
+    expect(otherBuild.status).toBe("unvalidated");
+    expect(otherBuild.problems[0].code).toBe("UE4SS_RUNTIME_UNVALIDATED");
+  });
+
+  it("lets live packaged runtime validation override scoped metadata", async () => {
+    const { root, manager } = await makeRuntimeManagerWithBundle({
+      bundledUe4ssCompatibility: {
+        status: "unvalidated",
+        message: "Packaged runtime needs live validation.",
+        scopedIncompatibilities: [
+          {
+            steamBuildIds: ["24782175"],
+            fingerprintSha256: ["f".repeat(64)],
+            message:
+              "Packaged UE4SS v3.0.1 LTS cannot initialize on this Clawed build."
+          }
+        ]
+      }
+    });
+
+    await manager.installBundledUe4ssRuntime();
+    await manager.recordBundledUe4ssRuntimeValidation({
+      status: "VALIDATED",
+      steamBuildId: "24782175",
+      fingerprintSha256: "f".repeat(64),
+      evidencePath: path.join(root, "evidence"),
+      markerModId: "CMMPackagedRuntimeValidation",
+      details: "Minimal read-only Lua startup marker passed."
+    });
+    const snapshot = await manager.getRuntimeSnapshot(
+      "24782175",
+      "f".repeat(64)
+    );
+
+    expect(snapshot.status).toBe("validated");
+    expect(snapshot.ue4ss?.releaseValidation).toBe("VALIDATED");
+    expect(snapshot.problems).toEqual([]);
+  });
+
   it("marks a release-validated packaged runtime as validated", async () => {
     const { manager } = await makeRuntimeManagerWithBundle({
       bundledUe4ssCompatibility: {
@@ -349,6 +458,53 @@ describe("runtime manager", () => {
     });
     expect(matchingSnapshot.status).toBe("validated");
     expect(changedBuildSnapshot.status).toBe("unvalidated");
+    expect(changedBuildSnapshot.problems[0].code).toBe(
+      "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED"
+    );
+  });
+
+  it("scopes incompatible packaged runtime evidence to the tested build", async () => {
+    const { root, manager } = await makeRuntimeManagerWithBundle({
+      bundledUe4ssCompatibility: {
+        status: "validated",
+        message: "Packaged UE4SS loads a minimal Lua mod in Clawed.",
+        validatedSteamBuildIds: ["24742251"]
+      }
+    });
+
+    const installed = await manager.installBundledUe4ssRuntime();
+    const evidencePath = path.join(root, "evidence");
+    const recorded = await manager.recordBundledUe4ssRuntimeValidation({
+      status: "INCOMPATIBLE",
+      steamBuildId: "99999999",
+      fingerprintSha256: "f".repeat(64),
+      evidencePath,
+      markerModId: "CMMPackagedRuntimeValidation",
+      details:
+        "UE4SS pattern scan failed before the packaged validation Lua marker could run."
+    });
+    const matchingSnapshot = await manager.getRuntimeSnapshot("99999999");
+    const changedBuildSnapshot = await manager.getRuntimeSnapshot("88888888");
+
+    expect(installed.runtime?.source).toBe("bundled");
+    expect(recorded.status).toBe("recorded");
+    expect(recorded.runtime).toMatchObject({
+      source: "bundled",
+      releaseValidation: "INCOMPATIBLE",
+      validation: {
+        status: "INCOMPATIBLE",
+        steamBuildId: "99999999",
+        markerModId: "CMMPackagedRuntimeValidation",
+        sourceSha256: installed.runtime?.sourceSha256
+      }
+    });
+    expect(matchingSnapshot.status).toBe("incompatible");
+    expect(matchingSnapshot.problems[0]).toMatchObject({
+      code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+      technicalDetail: expect.stringContaining(evidencePath)
+    });
+    expect(changedBuildSnapshot.status).toBe("unvalidated");
+    expect(changedBuildSnapshot.ue4ss?.releaseValidation).toBe("UNVALIDATED");
     expect(changedBuildSnapshot.problems[0].code).toBe(
       "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED"
     );

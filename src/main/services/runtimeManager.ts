@@ -53,16 +53,25 @@ export interface LocalRuntimeManagerOptions {
   bundledUe4ssCompatibility?: BundledUe4ssCompatibility;
 }
 
+export interface BundledUe4ssScopedIncompatibility {
+  steamBuildIds?: string[];
+  fingerprintSha256?: string[];
+  message: string;
+  technicalDetail?: string;
+}
+
 export type BundledUe4ssCompatibility =
   | {
       status: "unvalidated";
       message?: string;
+      scopedIncompatibilities?: BundledUe4ssScopedIncompatibility[];
     }
   | {
       status: "validated";
       message?: string;
       technicalDetail?: string;
       validatedSteamBuildIds?: string[];
+      scopedIncompatibilities?: BundledUe4ssScopedIncompatibility[];
     }
   | {
       status: "incompatible";
@@ -680,7 +689,23 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
             "error",
             "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
             "The packaged UE4SS runtime failed validation against this Clawed build.",
-            runtime.validation.details ?? runtime.validation.evidencePath
+            runtimeValidationTechnicalDetail(runtime.validation)
+          )
+        ];
+      }
+
+      const scopedIncompatibility = findBundledScopedIncompatibility(
+        compatibility,
+        currentSteamBuildId,
+        currentFingerprintSha256
+      );
+      if (scopedIncompatibility) {
+        return [
+          modProblem(
+            "error",
+            "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+            scopedIncompatibility.message,
+            scopedIncompatibility.technicalDetail
           )
         ];
       }
@@ -754,7 +779,7 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
           "error",
           "UE4SS_USER_RUNTIME_INCOMPATIBLE",
           "The user-imported UE4SS runtime failed validation against the Clawed release build.",
-          validation?.details ?? validation?.evidencePath ?? undefined
+          runtimeValidationTechnicalDetail(validation)
         )
       ];
     }
@@ -778,6 +803,43 @@ export class LocalRuntimeManager implements RuntimeManagerContract {
     if (
       runtime.source === "bundled" &&
       !this.isCurrentBundledRuntime(runtime) &&
+      runtime.releaseValidation !== "UNVALIDATED"
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
+    if (
+      runtime.source === "bundled" &&
+      runtime.validation &&
+      bundledRuntimeScopeProblem(
+        runtime,
+        currentSteamBuildId,
+        currentFingerprintSha256
+      ) &&
+      runtime.releaseValidation !== "UNVALIDATED"
+    ) {
+      return Ue4ssRuntimeInstallSchema.parse({
+        ...runtime,
+        releaseValidation: "UNVALIDATED"
+      });
+    }
+
+    if (
+      runtime.source === "bundled" &&
+      findBundledScopedIncompatibility(
+        this.options.bundledUe4ssCompatibility,
+        currentSteamBuildId,
+        currentFingerprintSha256
+      ) &&
+      (!runtime.validation ||
+        bundledRuntimeScopeProblem(
+          runtime,
+          currentSteamBuildId,
+          currentFingerprintSha256
+        ) !== null) &&
       runtime.releaseValidation !== "UNVALIDATED"
     ) {
       return Ue4ssRuntimeInstallSchema.parse({
@@ -1191,6 +1253,47 @@ function unvalidatedRuntimeProblems(message: string): ModProblem[] {
       message
     )
   ];
+}
+
+function runtimeValidationTechnicalDetail(
+  validation?: Ue4ssRuntimeInstall["validation"]
+): string | undefined {
+  if (!validation) {
+    return undefined;
+  }
+
+  const details = validation.details?.trim();
+  if (details?.includes(validation.evidencePath)) {
+    return details;
+  }
+
+  return [details, `Evidence: ${validation.evidencePath}.`]
+    .filter((part): part is string => Boolean(part))
+    .join(" ");
+}
+
+function findBundledScopedIncompatibility(
+  compatibility: BundledUe4ssCompatibility | undefined,
+  currentSteamBuildId?: string | null,
+  currentFingerprintSha256?: string | null
+): BundledUe4ssScopedIncompatibility | null {
+  const scopes =
+    compatibility && "scopedIncompatibilities" in compatibility
+      ? compatibility.scopedIncompatibilities ?? []
+      : [];
+  const currentFingerprint = currentFingerprintSha256?.toLowerCase();
+
+  return (
+    scopes.find(
+      (scope) =>
+        (currentSteamBuildId &&
+          scope.steamBuildIds?.includes(currentSteamBuildId)) ||
+        (currentFingerprint &&
+          scope.fingerprintSha256?.some(
+            (fingerprint) => fingerprint.toLowerCase() === currentFingerprint
+          ))
+    ) ?? null
+  );
 }
 
 function userRuntimeScopeProblem(

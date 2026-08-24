@@ -162,6 +162,7 @@ export interface DeploymentServiceContract extends ServiceHealthReporter {
 export interface PackagedRuntimeValidationServiceContract
   extends ServiceHealthReporter {
   validate(discovery: GameDiscovery): Promise<ValidatePackagedRuntimeResult>;
+  cancel(): Promise<ValidatePackagedRuntimeResult>;
 }
 
 export interface UnrealMappingsServiceContract extends ServiceHealthReporter {

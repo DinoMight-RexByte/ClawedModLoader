@@ -41,7 +41,7 @@ const liveValidationEnabled =
   process.env.CMM_LIVE_CLAWED_VISIBLE_MOD_VALIDATION === "1";
 const defaultClawedInstallPath =
   "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Clawed";
-const bundledUe4ssVersion = "ue4ss-v3.0.1-lts";
+const bundledUe4ssVersion = "ue4ss-v3.0.1-1028-gd7e7826d";
 
 class FakeStorageService implements StorageServiceContract {
   constructor(private readonly layout: AppStorageLayout) {}
@@ -104,7 +104,7 @@ describe.runIf(liveValidationEnabled)("live visible UE4SS validation mod", () =>
       bundledUe4ssCompatibility: {
         status: "unvalidated",
         message:
-          "Packaged UE4SS v3.0.1 LTS has not been validated as the current bundled default for this Clawed build."
+          "Packaged UE4SS v3.0.1-1028-gd7e7826d has not been validated as the current bundled default for this Clawed build."
       }
     });
     const gameAdapter = new ClawedGameAdapter();
@@ -329,7 +329,7 @@ async function captureClawedWindowScreenshot(
     "    public static extern bool SetForegroundWindow(IntPtr hWnd);",
     "}",
     "'@",
-    "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1)",
+    "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1)",
     "if ($processes.Count -eq 0) { throw 'No visible Clawed window found for screenshot capture.' }",
     "$process = $processes[0]",
     "[void][CmmUser32]::SetForegroundWindow($process.MainWindowHandle)",
@@ -361,7 +361,7 @@ async function launchClawedThroughSteam(): Promise<void> {
 async function requestClawedClose(): Promise<void> {
   await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' })",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' })",
       "foreach ($process in $processes) { [void]$process.CloseMainWindow() }",
       "$processes.Count"
     ].join("; ")
@@ -386,7 +386,7 @@ async function waitForNoClawedProcesses(timeoutMs: number): Promise<ProcessInfo[
 async function getClawedProcesses(): Promise<ProcessInfo[]> {
   const output = await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' } | Select-Object Id, ProcessName, MainWindowTitle)",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' } | Select-Object Id, ProcessName, MainWindowTitle)",
       "if ($processes.Count -eq 0) { '[]' } else { $processes | ConvertTo-Json -Compress }"
     ].join("; ")
   );

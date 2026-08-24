@@ -9,12 +9,12 @@ import {
   generatedSupportedSteamBuilds
 } from "./clawedBuildMetadata.mjs";
 
-const modId = "ClawedCoopCatchupTeleport";
-const modName = "Clawed Co-op Catch-up Teleport";
-const version = "0.2.0-prototype.20260817";
+const modId = "CoopCatchupTeleport";
+const modName = "Co-op Catch-up Teleport";
+const version = "0.2.2-prototype.20260822";
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
-  "Generated against the currently detected Clawed build; no multiplayer runtime validation has been performed.";
+  "Manual-only N-player hotfix generated against the currently detected Clawed build; no multiplayer runtime validation has been performed.";
 const releaseRoot = path.resolve("release");
 const outputRoot = path.resolve(
   process.env.CMM_COOP_CATCHUP_OUTPUT_DIR ??
@@ -22,21 +22,16 @@ const outputRoot = path.resolve(
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
 const lua = String.raw`local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
-local marker = "[ClawedCoopCatchupTeleport] "
+local marker = "[CoopCatchupTeleport] "
 local max_retries = 8
-local initial_delay_ms = 750
 local retry_delay_ms = 500
-local min_distance_sq = 6250000.0
-local start_area_radius_sq = 12250000.0
 local cooldown_seconds = 30.0
 local radial_radii = { 300.0, 450.0, 650.0, 900.0 }
 local radial_angles = { 0.0, 45.0, 90.0, 135.0, 180.0, 225.0, 270.0, 315.0 }
 local capsule_radius = 45.0
 local capsule_half_height = 96.0
 local unpack_fn = table.unpack or unpack
-local beginplay_logs = 0
 local last_catchup = {}
-local auto_seen = {}
 
 local function log(event, value)
     print(marker .. event .. "|" .. tostring(value))
@@ -163,20 +158,6 @@ local function get_world()
         if ok and is_valid(world) then return world end
     end
     return find_first("World")
-end
-
-local function get_game_mode(world)
-    local game_mode = get_prop(world, "AuthorityGameMode") or get_prop(world, "GameMode")
-    if is_valid(game_mode) then return game_mode end
-    local ok, method_result = call_method(world, "GetAuthGameMode")
-    if ok and is_valid(method_result) then return method_result end
-    return find_first("GameModeBase")
-end
-
-local function get_game_state(world)
-    local game_state = get_prop(world, "GameState")
-    if is_valid(game_state) then return game_state end
-    return find_first("GameStateBase")
 end
 
 local function get_location(actor)
@@ -383,18 +364,27 @@ local function collect_controllers()
     return controllers
 end
 
-local function collect_player_pawns(source, emit)
+local function local_controller()
+    if ok_helpers and UEHelpers.GetPlayerController ~= nil then
+        local ok, controller = pcall(function() return UEHelpers.GetPlayerController() end)
+        if ok and is_valid(controller) then return controller end
+    end
+    local controllers = collect_controllers()
+    for _, controller in ipairs(controllers) do
+        if is_local_controller(controller) == true then return controller end
+    end
+    return controllers[1]
+end
+
+local function collect_player_pawns()
     local players = {}
     local seen = {}
     for _, controller in ipairs(collect_controllers()) do
-        local pawn, pawn_source = get_controller_pawn(controller)
+        local pawn = get_controller_pawn(controller)
         local reason = death_reason(pawn)
         local location = nil
         if reason == nil then location = get_location(pawn) end
-        local state, state_source = get_player_state(controller, pawn)
-        if emit then
-            log("controller", source .. "|pc=" .. full_name(controller) .. "|class=" .. class_name(controller) .. "|local=" .. bool_text(is_local_controller(controller)) .. "|authority=" .. bool_text(has_authority(controller)) .. "|pawn=" .. full_name(pawn) .. "|pawn_source=" .. pawn_source .. "|pawn_authority=" .. bool_text(has_authority(pawn)) .. "|player_state=" .. full_name(state) .. "|state_source=" .. state_source .. "|pawn_state=" .. tostring(reason or "candidate") .. "|loc=" .. vec_text(location))
-        end
+        local state = get_player_state(controller, pawn)
         if reason == nil and location ~= nil then
             local key = full_name(pawn)
             if seen[key] ~= true then
@@ -404,30 +394,6 @@ local function collect_player_pawns(source, emit)
         end
     end
     return players
-end
-
-local function snapshot(source)
-    local ok, err = pcall(function()
-        local world = get_world()
-        local game_mode = get_game_mode(world)
-        local game_state = get_game_state(world)
-        log("world", source .. "|world=" .. full_name(world) .. "|class=" .. class_name(world))
-        log("gamemode", source .. "|gm=" .. full_name(game_mode) .. "|class=" .. class_name(game_mode) .. "|authority=" .. bool_text(has_authority(game_mode)))
-        log("gamestate", source .. "|gs=" .. full_name(game_state) .. "|class=" .. class_name(game_state) .. "|authority=" .. bool_text(has_authority(game_state)))
-        local players = collect_player_pawns(source, true)
-        log("player_pawn_count", source .. "|" .. tostring(#players))
-        local pawns = find_all("Pawn")
-        local count = 0
-        for _, pawn in pairs(pawns) do
-            count = count + 1
-            if count <= 24 then
-                local location = get_location(pawn)
-                log("pawn", source .. "|idx=" .. tostring(count) .. "|name=" .. full_name(pawn) .. "|class=" .. class_name(pawn) .. "|authority=" .. bool_text(has_authority(pawn)) .. "|state=" .. tostring(death_reason(pawn) or "candidate") .. "|loc=" .. vec_text(location))
-            end
-        end
-        log("pawn_count", source .. "|" .. tostring(count))
-    end)
-    if not ok then log("error", "snapshot|" .. source .. "|" .. tostring(err)) end
 end
 
 local function ensure_target_record(players, pawn)
@@ -442,26 +408,23 @@ local function ensure_target_record(players, pawn)
     return target
 end
 
-local function choose_teammate(target, players, preferred_state)
-    if is_valid(preferred_state) then
-        for _, player in ipairs(players) do
-            if same_object(player.state, preferred_state) and not same_object(player.pawn, target.pawn) then
-                return player, dist_sq(target.location, player.location), "preferred"
-            end
-        end
-    end
-    local best = nil
-    local best_distance = nil
+local function teammate_candidates(target, players, preferred_state)
+    local candidates = {}
+    local preferred_requested = is_valid(preferred_state)
     for _, player in ipairs(players) do
         if not same_object(player.pawn, target.pawn) then
             local distance = dist_sq(target.location, player.location)
-            if distance ~= nil and (best_distance == nil or distance < best_distance) then
-                best = player
-                best_distance = distance
+            if distance ~= nil then
+                local preferred = preferred_requested and same_object(player.state, preferred_state)
+                table.insert(candidates, { player = player, distance = distance, choice = preferred and "preferred" or "nearest", preferred = preferred })
             end
         end
     end
-    return best, best_distance, "nearest"
+    table.sort(candidates, function(left, right)
+        if left.preferred ~= right.preferred then return left.preferred == true end
+        return left.distance < right.distance
+    end)
+    return candidates
 end
 
 local function get_kismet_system_library()
@@ -571,35 +534,6 @@ local function capsule_sweep_clear(world, pawn, teammate, location)
     return true, "capsule_clear"
 end
 
-local function collect_start_locations()
-    local starts = {}
-    for _, class_name_value in ipairs({ "BP_PlayerSpawn_Point_FDG_C", "PlayerStart" }) do
-        for _, actor in pairs(find_all(class_name_value)) do
-            local location = get_location(actor)
-            if is_valid(actor) and location ~= nil then table.insert(starts, location) end
-        end
-    end
-    return starts
-end
-
-local function nearest_start_distance_sq(location)
-    local starts = collect_start_locations()
-    local best = nil
-    for _, start_location in ipairs(starts) do
-        local distance = dist_sq(location, start_location)
-        if distance ~= nil and (best == nil or distance < best) then best = distance end
-    end
-    if best ~= nil then return best, #starts, "spawn_points" end
-    return dist_sq(location, vec(0.0, 0.0, 0.0)), 0, "world_origin"
-end
-
-local function party_beyond_start(source, target, teammate)
-    local distance, count, basis = nearest_start_distance_sq(teammate.location)
-    local beyond = distance ~= nil and distance > start_area_radius_sq
-    log("progress_gate", source .. "|basis=" .. basis .. "|start_refs=" .. tostring(count) .. "|teammate_dist=" .. tostring(distance ~= nil and math.sqrt(distance) or "unknown") .. "|beyond=" .. tostring(beyond) .. "|target=" .. target.name .. "|teammate=" .. teammate.name)
-    return beyond
-end
-
 local function find_safe_location(source, world, target, teammate)
     local idx = 0
     for _, radius in ipairs(radial_radii) do
@@ -699,7 +633,7 @@ local function server_request_catchup_to_teammate(source, requester, preferred_t
         log("teleport_skipped", source .. "|reason=validation_" .. request_reason)
         return false
     end
-    local players = collect_player_pawns(source, false)
+    local players = collect_player_pawns()
     local target = ensure_target_record(players, requester.pawn)
     if target == nil then
         log("teleport_skipped", source .. "|reason=target_location_missing|pawn=" .. full_name(requester.pawn))
@@ -712,46 +646,52 @@ local function server_request_catchup_to_teammate(source, requester, preferred_t
         log("teleport_skipped", source .. "|reason=teammate_missing|valid_player_pawns=" .. tostring(#players))
         return false
     end
-    local teammate, distance, choice = choose_teammate(target, players, preferred_target)
-    if teammate == nil then
+    local candidates = teammate_candidates(target, players, preferred_target)
+    if #candidates < 1 then
         log("teleport_skipped", source .. "|reason=no_distinct_teammate|valid_player_pawns=" .. tostring(#players))
         return false
     end
-    log("teammate_found", source .. "|choice=" .. choice .. "|target=" .. target.name .. "|target_state=" .. full_name(target.state) .. "|teammate=" .. teammate.name .. "|teammate_state=" .. full_name(teammate.state) .. "|distance=" .. tostring(distance ~= nil and math.sqrt(distance) or "unknown"))
-    local team_ok, team_reason = same_session_team(target, teammate)
-    log("validation", source .. "|same_session_team=" .. tostring(team_ok) .. "|" .. team_reason)
-    if not team_ok then
-        log("teleport_skipped", source .. "|reason=validation_" .. team_reason)
-        return false
-    end
-    local teammate_state_reason = state_gate_reason(teammate)
-    log("validation", source .. "|teammate_state=" .. tostring(teammate_state_reason == nil) .. "|" .. tostring(teammate_state_reason or "ok"))
-    if teammate_state_reason ~= nil then
-        log("teleport_skipped", source .. "|reason=validation_teammate_" .. teammate_state_reason)
-        return false
-    end
-    if manual ~= true then
-        local key = state_key(target)
-        if auto_seen[key] == true then
-            log("teleport_skipped", source .. "|reason=auto_already_evaluated|target=" .. target.name)
-            return false
-        end
-        auto_seen[key] = true
-        if distance ~= nil and distance < min_distance_sq then
-            log("teleport_skipped", source .. "|reason=already_near|distance=" .. tostring(math.sqrt(distance)) .. "|target=" .. target.name .. "|teammate=" .. teammate.name)
-            return false
-        end
-        if not party_beyond_start(source, target, teammate) then
-            log("teleport_skipped", source .. "|reason=party_not_beyond_start|target=" .. target.name .. "|teammate=" .. teammate.name)
-            return false
-        end
-    end
+    log("teammate_candidates", source .. "|count=" .. tostring(#candidates) .. "|valid_player_pawns=" .. tostring(#players))
     local world = get_world()
-    local target_location, target_rotation, placement_detail = find_safe_location(source, world, target, teammate)
-    if target_location == nil then
-        log("teleport_skipped", source .. "|reason=no_safe_radial_candidate|detail=" .. placement_detail .. "|target=" .. target.name .. "|teammate=" .. teammate.name)
+    local teammate = nil
+    local distance = nil
+    local choice = nil
+    local target_location = nil
+    local target_rotation = nil
+    local placement_detail = nil
+    for idx, candidate in ipairs(candidates) do
+        local candidate_teammate = candidate.player
+        local candidate_distance = candidate.distance
+        log("teammate_candidate", source .. "|idx=" .. tostring(idx) .. "|choice=" .. candidate.choice .. "|target=" .. target.name .. "|target_state=" .. full_name(target.state) .. "|teammate=" .. candidate_teammate.name .. "|teammate_state=" .. full_name(candidate_teammate.state) .. "|distance=" .. tostring(math.sqrt(candidate_distance)))
+        local team_ok, team_reason = same_session_team(target, candidate_teammate)
+        log("validation", source .. "|candidate=" .. tostring(idx) .. "|same_session_team=" .. tostring(team_ok) .. "|" .. team_reason)
+        if team_ok then
+            local teammate_state_reason = state_gate_reason(candidate_teammate)
+            log("validation", source .. "|candidate=" .. tostring(idx) .. "|teammate_state=" .. tostring(teammate_state_reason == nil) .. "|" .. tostring(teammate_state_reason or "ok"))
+            if teammate_state_reason == nil then
+                local candidate_location, candidate_rotation, candidate_detail = find_safe_location(source, world, target, candidate_teammate)
+                if candidate_location ~= nil then
+                    teammate = candidate_teammate
+                    distance = candidate_distance
+                    choice = candidate.choice
+                    target_location = candidate_location
+                    target_rotation = candidate_rotation
+                    placement_detail = candidate_detail
+                    break
+                end
+                log("teammate_candidate_skipped", source .. "|idx=" .. tostring(idx) .. "|reason=no_safe_radial_candidate|detail=" .. tostring(candidate_detail) .. "|teammate=" .. candidate_teammate.name)
+            else
+                log("teammate_candidate_skipped", source .. "|idx=" .. tostring(idx) .. "|reason=validation_teammate_" .. teammate_state_reason .. "|teammate=" .. candidate_teammate.name)
+            end
+        else
+            log("teammate_candidate_skipped", source .. "|idx=" .. tostring(idx) .. "|reason=validation_" .. team_reason .. "|teammate=" .. candidate_teammate.name)
+        end
+    end
+    if teammate == nil then
+        log("teleport_skipped", source .. "|reason=no_viable_teammate|valid_player_pawns=" .. tostring(#players) .. "|candidates=" .. tostring(#candidates))
         return false
     end
+    log("teammate_found", source .. "|choice=" .. choice .. "|target=" .. target.name .. "|target_state=" .. full_name(target.state) .. "|teammate=" .. teammate.name .. "|teammate_state=" .. full_name(teammate.state) .. "|distance=" .. tostring(distance ~= nil and math.sqrt(distance) or "unknown"))
     log("teleport_attempt", source .. "|manual=" .. tostring(manual == true) .. "|pawn=" .. target.name .. "|teammate=" .. teammate.name .. "|from=" .. vec_text(target.location) .. "|to=" .. vec_text(target_location) .. "|distance=" .. tostring(distance ~= nil and math.sqrt(distance) or "unknown") .. "|placement=" .. placement_detail)
     local success, method, detail = teleport_actor(target.pawn, target_location, target_rotation)
     if success then
@@ -763,9 +703,9 @@ local function server_request_catchup_to_teammate(source, requester, preferred_t
     return false
 end
 
-local function attempt_catchup(source, controller, pawn, attempt, manual, preferred_target)
-    controller = unwrap(controller)
-    pawn = unwrap(pawn)
+local function attempt_catchup(source, attempt, manual)
+    local controller = local_controller()
+    local pawn = get_controller_pawn(controller)
     if not is_valid(pawn) and is_valid(controller) then
         pawn = get_controller_pawn(controller)
         log("pawn_found", source .. "|attempt=" .. tostring(attempt) .. "|pc=" .. full_name(controller) .. "|pawn=" .. full_name(pawn))
@@ -789,7 +729,7 @@ local function attempt_catchup(source, controller, pawn, attempt, manual, prefer
         log("teleport_skipped", source .. "|reason=target_location_missing|pawn=" .. full_name(pawn))
         return false
     end
-    local players = collect_player_pawns(source, false)
+    local players = collect_player_pawns()
     log("teammate_scan", source .. "|attempt=" .. tostring(attempt) .. "|valid_player_pawns=" .. tostring(#players))
     if #players < 2 then
         if attempt < max_retries then
@@ -799,11 +739,11 @@ local function attempt_catchup(source, controller, pawn, attempt, manual, prefer
         log("teleport_skipped", source .. "|reason=teammate_missing|valid_player_pawns=" .. tostring(#players))
         return false
     end
-    return server_request_catchup_to_teammate(source, target, preferred_target, manual, attempt)
+    return server_request_catchup_to_teammate(source, target, nil, manual, attempt)
 end
 
-local function run_scheduled(source, controller, pawn, attempt, manual, preferred_target)
-    local ok, retry = pcall(function() return attempt_catchup(source, controller, pawn, attempt, manual, preferred_target) end)
+local function run_scheduled(source, attempt, manual)
+    local ok, retry = pcall(function() return attempt_catchup(source, attempt, manual) end)
     if not ok then
         log("error", source .. "|attempt=" .. tostring(attempt) .. "|" .. tostring(retry))
         return
@@ -812,41 +752,22 @@ local function run_scheduled(source, controller, pawn, attempt, manual, preferre
         local delay_ms = retry_delay_ms
         ExecuteWithDelay(delay_ms, function()
             ExecuteInGameThread(function()
-                run_scheduled(source, controller, pawn, attempt + 1, manual, preferred_target)
+                run_scheduled(source, attempt + 1, manual)
             end)
         end)
     end
 end
 
-local function schedule_catchup(source, controller, pawn, manual, preferred_target)
-    local delay_ms = initial_delay_ms
-    ExecuteWithDelay(delay_ms, function()
-        ExecuteInGameThread(function()
-            run_scheduled(source, controller, pawn, 1, manual, preferred_target)
-        end)
-    end)
-end
-
-local function local_controller()
-    if ok_helpers and UEHelpers.GetPlayerController ~= nil then
-        local ok, controller = pcall(function() return UEHelpers.GetPlayerController() end)
-        if ok and is_valid(controller) then return controller end
-    end
-    local controllers = collect_controllers()
-    for _, controller in ipairs(controllers) do
-        if is_local_controller(controller) == true then return controller end
-    end
-    return controllers[1]
-end
-
-local function manual_catchup(source, preferred_target)
+local function schedule_catchup(source, manual)
     ExecuteInGameThread(function()
-        local controller = local_controller()
-        local pawn = get_controller_pawn(controller)
-        local label = source or "manual"
-        log("manual_trigger", label .. "|pc=" .. full_name(controller) .. "|pawn=" .. full_name(pawn) .. "|preferred_target=" .. full_name(preferred_target))
-        schedule_catchup(label, controller, pawn, true, preferred_target)
+        run_scheduled(source, 1, manual)
     end)
+end
+
+local function manual_catchup(source)
+    local label = source or "manual"
+    log("manual_trigger", label .. "|deferred=reacquire_current_controller")
+    schedule_catchup(label, true)
 end
 
 local function register_manual_trigger()
@@ -877,84 +798,25 @@ local function register_ui_button_probe()
     log("ui_button", "deferred|active_umg_button_deferred_pending_pause_or_map_widget_validation")
 end
 
-local function register_hook(label, hook_name, callback)
-    if type(RegisterHook) ~= "function" then
-        log("hook_register", label .. "|false|RegisterHook missing")
-        return
-    end
-    local ok, err = pcall(function() RegisterHook(hook_name, callback) end)
-    log("hook_register", label .. "|" .. tostring(ok) .. "|" .. tostring(err))
-end
-
-register_hook("ClientRestart", "/Script/Engine.PlayerController:ClientRestart", function(self, NewPawn)
-    local controller = unwrap(self)
-    local pawn = unwrap(NewPawn)
-    log("hook", "ClientRestart|pc=" .. full_name(controller) .. "|new_pawn=" .. full_name(pawn) .. "|pc_authority=" .. bool_text(has_authority(controller)) .. "|pawn_authority=" .. bool_text(has_authority(pawn)))
-    schedule_catchup("ClientRestart", controller, pawn, false)
-end)
-
-register_hook("K2_PostLogin", "/Script/Engine.GameModeBase:K2_PostLogin", function(self, NewPlayer)
-    local game_mode = unwrap(self)
-    local controller = unwrap(NewPlayer)
-    local pawn = get_controller_pawn(controller)
-    log("hook", "K2_PostLogin|gm=" .. full_name(game_mode) .. "|gm_authority=" .. bool_text(has_authority(game_mode)) .. "|pc=" .. full_name(controller) .. "|pawn=" .. full_name(pawn))
-    schedule_catchup("K2_PostLogin", controller, pawn, false)
-end)
-
-local ok_notify, notify_err = pcall(function()
-    NotifyOnNewObject("/Script/Engine.PlayerController", function(object)
-        local controller = unwrap(object)
-        local pawn = get_controller_pawn(controller)
-        log("hook", "NotifyPlayerController|pc=" .. full_name(controller) .. "|pawn=" .. full_name(pawn))
-        schedule_catchup("NotifyPlayerController", controller, pawn, false)
-    end)
-end)
-log("hook_register", "NotifyPlayerController|" .. tostring(ok_notify) .. "|" .. tostring(notify_err))
-
-local ok_begin, begin_err = pcall(function()
-    RegisterBeginPlayPostHook(function(ContextParam)
-        if beginplay_logs >= 12 then return end
-        beginplay_logs = beginplay_logs + 1
-        local context = unwrap(ContextParam)
-        log("hook", "BeginPlay|idx=" .. tostring(beginplay_logs) .. "|actor=" .. full_name(context) .. "|class=" .. class_name(context) .. "|authority=" .. bool_text(has_authority(context)))
-    end)
-end)
-log("hook_register", "BeginPlay|" .. tostring(ok_begin) .. "|" .. tostring(begin_err))
-
-local ok_load, load_err = pcall(function()
-    RegisterLoadMapPostHook(function(Engine, World)
-        local world = unwrap(World)
-        log("hook", "LoadMapPostHook|world=" .. full_name(world))
-        ExecuteInGameThread(function() snapshot("loadmap") end)
-        ExecuteWithDelay(4000, function()
-            ExecuteInGameThread(function() snapshot("loadmap_delayed") end)
-        end)
-    end)
-end)
-log("hook_register", "LoadMapPostHook|" .. tostring(ok_load) .. "|" .. tostring(load_err))
-
-log("startup", "version=0.2.0-prototype.20260817|helpers=" .. tostring(ok_helpers))
+log("startup", "version=0.2.2-prototype.20260822|helpers=" .. tostring(ok_helpers) .. "|mode=manual_only_no_start_load_hooks")
 register_manual_trigger()
 register_ui_button_probe()
-ExecuteInGameThread(function() snapshot("startup") end)
-ExecuteWithDelay(4000, function()
-    ExecuteInGameThread(function() snapshot("startup_delayed") end)
-end)
 `;
 const readme = [
   `# ${modName}`,
   "",
-  "First-pass UE4SS Lua prototype for Clawed co-op spawn and respawn catch-up.",
+  "Manual-only UE4SS Lua hotfix prototype for Clawed co-op catch-up teleport.",
   "",
   "Behavior:",
   "",
-  "- Logs active world, GameMode, GameState, PlayerControllers, pawns, local-controller status, and authority state.",
-  "- Hooks `PlayerController:ClientRestart`, `GameModeBase:K2_PostLogin`, PlayerController creation, BeginPlay, and map load.",
-  "- Waits briefly after a spawn or possession signal, then retries for a bounded window while the game's own spawn/save logic settles.",
-  "- Routes automatic, keybind, and console requests through a Lua-side `ServerRequestCatchupToTeammate` contract marker.",
-  "- Teleports only from an authority-owned possessed pawn, only after at least two valid player pawns are present, and skips dead, spectator, invalid, already-near, unsafe-state, cooldown-blocked, and critical-objective-carrier pawns when those states are detectable.",
-  "- Auto-runs once per late-join pawn only when the existing teammate appears beyond the starting area, estimated from Clawed spawn point actors or world origin fallback.",
-  "- Searches radial offsets around the teammate, attempts `ProjectPointToNavigation`, requires a clear `CapsuleTraceSingle`, and probes unsafe volume names before moving.",
+  "- Does not register `PlayerController:ClientRestart`, `GameModeBase:K2_PostLogin`, PlayerController creation, BeginPlay, or map-load hooks.",
+  "- Does not run automatic catch-up work while starting a new game or loading a save.",
+  "- Routes keybind and console requests through a Lua-side `ServerRequestCatchupToTeammate` contract marker.",
+  "- Reacquires the current local controller and pawn for each manual retry instead of retaining UE4SS callback parameter wrappers.",
+  "- Teleports only from an authority-owned possessed pawn and requires at least one distinct valid teammate.",
+  "- Supports any number of visible player pawns by sorting all candidate teammates, preferring a requested target when available, and falling back to the nearest viable teammate.",
+  "- Skips dead, spectator, invalid, unsafe-state, cooldown-blocked, and critical-objective-carrier pawns when those states are detectable.",
+  "- Searches radial offsets around each viable teammate, attempts `ProjectPointToNavigation`, requires a clear `CapsuleTraceSingle`, probes unsafe volume names before moving, and tries the next viable teammate if placement fails.",
   "- Attempts to update `LastAuthoritativeSpawnTransform`/related members and calls `ForceNetUpdate` when those members are available.",
   "- Registers `CTRL+F8` as a manual local catch-up trigger when UE4SS keybind APIs are available.",
   "- Registers `cmm_catchup` as a console command handler when UE4SS exposes that API.",
@@ -962,18 +824,22 @@ const readme = [
   "",
   "Expected UE4SS markers include:",
   "",
-  "- `[ClawedCoopCatchupTeleport] startup|...`",
-  "- `[ClawedCoopCatchupTeleport] hook_register|...`",
-  "- `[ClawedCoopCatchupTeleport] controller|...`",
-  "- `[ClawedCoopCatchupTeleport] server_rpc|ServerRequestCatchupToTeammate|...`",
-  "- `[ClawedCoopCatchupTeleport] validation|...`",
-  "- `[ClawedCoopCatchupTeleport] teammate_scan|...`",
-  "- `[ClawedCoopCatchupTeleport] teammate_found|...`",
-  "- `[ClawedCoopCatchupTeleport] placement_candidate|...`",
-  "- `[ClawedCoopCatchupTeleport] teleport_attempt|...`",
-  "- `[ClawedCoopCatchupTeleport] teleport_result|...`",
-  "- `[ClawedCoopCatchupTeleport] teleport_skipped|...`",
-  "- `[ClawedCoopCatchupTeleport] ui_button|...`",
+  "- `[CoopCatchupTeleport] startup|...`",
+  "- `[CoopCatchupTeleport] manual_keybind|...`",
+  "- `[CoopCatchupTeleport] manual_console|...`",
+  "- `[CoopCatchupTeleport] manual_trigger|...`",
+  "- `[CoopCatchupTeleport] server_rpc|ServerRequestCatchupToTeammate|...`",
+  "- `[CoopCatchupTeleport] validation|...`",
+  "- `[CoopCatchupTeleport] teammate_scan|...`",
+  "- `[CoopCatchupTeleport] teammate_candidates|...`",
+  "- `[CoopCatchupTeleport] teammate_candidate|...`",
+  "- `[CoopCatchupTeleport] teammate_candidate_skipped|...`",
+  "- `[CoopCatchupTeleport] teammate_found|...`",
+  "- `[CoopCatchupTeleport] placement_candidate|...`",
+  "- `[CoopCatchupTeleport] teleport_attempt|...`",
+  "- `[CoopCatchupTeleport] teleport_result|...`",
+  "- `[CoopCatchupTeleport] teleport_skipped|...`",
+  "- `[CoopCatchupTeleport] ui_button|...`",
   "",
   "Safety boundaries:",
   "",
@@ -981,7 +847,8 @@ const readme = [
   "- Does not patch Steam, EOS, executable files, anti-cheat, game DLLs, GameMode assets, or PlayerController assets.",
   "- Does not replace Clawed Blueprint classes.",
   "- Does not add a native replicated UFUNCTION; the RPC name is implemented as a logged Lua contract around server-authority movement.",
-  "- Multiplayer behavior is unvalidated until tested in a real two-player host/client session."
+  "- Start/load/player hook automation is disabled because user crash evidence showed UE4SS access violations during new-game/load flows.",
+  "- Multiplayer behavior is unvalidated until tested in real host/client sessions across supported party sizes."
 ].join("\n");
 const manifest = {
   schemaVersion: 1,
@@ -990,7 +857,7 @@ const manifest = {
   version,
   author: "Clawed Mod Manager",
   description:
-    "Prototype UE4SS host-side co-op catch-up teleport after player spawn or possession.",
+    "Manual-only UE4SS host-side N-player co-op catch-up teleport hotfix.",
   game: "clawed",
   loader: "ue4ss",
   dependencies: [],
@@ -1060,13 +927,15 @@ async function writePackage(outputDirectory) {
       steamBuildNotes
     ),
     manualTrigger:
-      "CTRL+F8 and cmm_catchup when UE4SS exposes those APIs; in-game UMG button deferred",
+      "Manual only: CTRL+F8 and cmm_catchup when UE4SS exposes those APIs; in-game UMG button deferred",
     placement:
       "Radial candidate search with best-effort ProjectPointToNavigation and required CapsuleTraceSingle clearance",
     authorityContract:
       "Lua-side ServerRequestCatchupToTeammate contract marker only; no native replicated UFUNCTION added",
     runtimeClaims: [
       "UE4SS Lua package structure only",
+      "Manual-only hotfix; no automatic start, load, PlayerController, BeginPlay, or map hooks",
+      "No hard-coded party size cap; every visible player pawn is considered and nearest viable teammate fallback is used",
       "Host/server-authority movement path only; client-only movement is skipped",
       "No executable, Steam, EOS, anti-cheat, game DLL, GameMode asset, or PlayerController asset patching",
       "Multiplayer host/client behavior unvalidated"

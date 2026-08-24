@@ -104,6 +104,14 @@ describe("IPC contracts", () => {
         problems: []
       })
     ).toMatchObject({ status: "validated" });
+    expect(
+      ValidatePackagedRuntimeResultSchema.parse({
+        status: "cancelled",
+        evidencePath: "C:\\CMM\\logs\\runtime-validation\\cancelled",
+        recording: null,
+        problems: []
+      })
+    ).toMatchObject({ status: "cancelled" });
   });
 
   it("validates renderer error diagnostics without accepting large payloads", () => {

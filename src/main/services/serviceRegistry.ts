@@ -36,7 +36,7 @@ import { ElectronStorageService } from "./storageService";
 import { WindowsSteamPathProvider } from "./steamPathProvider";
 import { LocalUnrealMappingsService } from "./unrealMappingsService";
 
-const BUNDLED_UE4SS_VERSION = "ue4ss-v3.0.1-lts";
+const BUNDLED_UE4SS_VERSION = "ue4ss-v3.0.1-1028-gd7e7826d";
 
 export type MainServiceDependencies = Omit<
   CoreServices,
@@ -80,7 +80,7 @@ export function createMainServices(options?: {
     bundledUe4ssCompatibility: {
       status: "unvalidated",
       message:
-        "Packaged UE4SS v3.0.1 LTS is installed for mod creator workflows, but this bundled default has not been live validated against the current Clawed build."
+        "Packaged UE4SS v3.0.1-1028-gd7e7826d is installed for runtime validation, but this bundled default has not been live validated against the current Clawed build."
     }
   });
   const clawedGameAdapter = new ClawedGameAdapter();

@@ -212,6 +212,7 @@ export const IPC_CHANNELS = {
   getRuntimeSnapshot: "cmm:runtime:getSnapshot",
   installBundledUe4ssRuntime: "cmm:runtime:installBundledUe4ss",
   validatePackagedRuntime: "cmm:runtime:validatePackaged",
+  cancelPackagedRuntimeValidation: "cmm:runtime:cancelPackagedValidation",
   importUe4ssRuntime: "cmm:runtime:importUe4ss",
   chooseAndImportUe4ssRuntime: "cmm:runtime:chooseAndImportUe4ss",
   getCreatorAssetRegistrySnapshot: "cmm:creatorAssets:getRegistrySnapshot",
@@ -485,6 +486,11 @@ export const ipcContracts = {
     requestSchema: EmptyRequestSchema,
     responseSchema: ValidatePackagedRuntimeResultSchema
   } satisfies IpcContract<EmptyRequest, ValidatePackagedRuntimeResult>,
+  cancelPackagedRuntimeValidation: {
+    channel: IPC_CHANNELS.cancelPackagedRuntimeValidation,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: ValidatePackagedRuntimeResultSchema
+  } satisfies IpcContract<EmptyRequest, ValidatePackagedRuntimeResult>,
   importUe4ssRuntime: {
     channel: IPC_CHANNELS.importUe4ssRuntime,
     requestSchema: ImportUe4ssRuntimeRequestSchema,
@@ -681,6 +687,7 @@ export interface CmmApi {
   getRuntimeSnapshot(): Promise<RuntimeSnapshot>;
   installBundledUe4ssRuntime(): Promise<ImportUe4ssRuntimeResult>;
   validatePackagedRuntime(): Promise<ValidatePackagedRuntimeResult>;
+  cancelPackagedRuntimeValidation(): Promise<ValidatePackagedRuntimeResult>;
   importUe4ssRuntime(
     request: ImportUe4ssRuntimeRequest
   ): Promise<ImportUe4ssRuntimeResult>;

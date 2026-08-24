@@ -89,6 +89,8 @@ const api: CmmApi = {
     invoke(ipcContracts.installBundledUe4ssRuntime, {}),
   validatePackagedRuntime: () =>
     invoke(ipcContracts.validatePackagedRuntime, {}),
+  cancelPackagedRuntimeValidation: () =>
+    invoke(ipcContracts.cancelPackagedRuntimeValidation, {}),
   importUe4ssRuntime: (request) =>
     invoke(ipcContracts.importUe4ssRuntime, request),
   chooseAndImportUe4ssRuntime: () =>

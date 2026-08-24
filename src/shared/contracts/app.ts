@@ -2127,7 +2127,13 @@ export type RecordUe4ssRuntimeValidationResult = z.infer<
 >;
 
 export const ValidatePackagedRuntimeResultSchema = z.object({
-  status: z.enum(["validated", "incompatible", "blocked", "failed"]),
+  status: z.enum([
+    "validated",
+    "incompatible",
+    "blocked",
+    "failed",
+    "cancelled"
+  ]),
   evidencePath: z.string().min(1).nullable(),
   recording: RecordUe4ssRuntimeValidationResultSchema.nullable(),
   problems: z.array(ModProblemSchema)

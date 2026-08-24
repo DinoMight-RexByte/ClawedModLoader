@@ -9,12 +9,12 @@ import {
   generatedSupportedSteamBuilds
 } from "./clawedBuildMetadata.mjs";
 
-const modId = "ClawedCoopSessionGuard";
-const modName = "Clawed Co-op Session Coordinator";
-const version = "0.2.0-prototype.20260817";
+const modId = "CoopSessionGuard";
+const modName = "Co-op Session Guard";
+const version = "0.2.1-prototype.20260822";
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
-  "Built against current package metadata and packaged config; no two-client join validation has been performed.";
+  "Built against current package metadata and packaged config; no multi-client supported-party-size validation has been performed.";
 const releaseRoot = path.resolve("release");
 const outputRoot = path.resolve(
   process.env.CMM_COOP_SESSION_GUARD_OUTPUT_DIR ??
@@ -22,8 +22,8 @@ const outputRoot = path.resolve(
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
 const lua = String.raw`local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
-local marker = "[ClawedCoopSessionGuard] "
-local version = "0.2.0-prototype.20260817"
+local marker = "[CoopSessionGuard] "
+local version = "0.2.1-prototype.20260822"
 local max_recent_events = 140
 local join_timeout_ms = 26000
 local invite_join_wait_ms = 1800
@@ -73,8 +73,8 @@ end
 
 local function write_failure(line)
     local targets = {
-        "ue4ss/Mods/ClawedCoopSessionGuard/session-failures.log",
-        "Mods/ClawedCoopSessionGuard/session-failures.log"
+        "ue4ss/Mods/CoopSessionGuard/session-failures.log",
+        "Mods/CoopSessionGuard/session-failures.log"
     }
     for _, target in ipairs(targets) do
         local ok, result = pcall(function() return write_line(target, line) end)
@@ -709,7 +709,7 @@ const readme = [
   "- Refuses duplicate guarded commands while a join/host/find/travel flow is active instead of stacking retries.",
   "- Captures the latest invite/search/join payloads and exposes deliberate recovery commands through the UE console.",
   "- Records structured session, invite, join, failure, timeout, world, widget, controller, and pawn markers to `UE4SS.log`.",
-  "- Writes compact failure bundles to `ue4ss/Mods/ClawedCoopSessionGuard/session-failures.log` when Lua file IO is available.",
+  "- Writes compact failure bundles to `ue4ss/Mods/CoopSessionGuard/session-failures.log` when Lua file IO is available.",
   "",
   "Console commands:",
   "",
@@ -721,19 +721,19 @@ const readme = [
   "",
   "Expected support markers:",
   "",
-  "- `[ClawedCoopSessionGuard] startup|...`",
-  "- `[ClawedCoopSessionGuard] hook_register|...`",
-  "- `[ClawedCoopSessionGuard] state_transition|...`",
-  "- `[ClawedCoopSessionGuard] invite_handoff|...`",
-  "- `[ClawedCoopSessionGuard] guarded_call|...`",
-  "- `[ClawedCoopSessionGuard] join_failure|...`",
-  "- `[ClawedCoopSessionGuard] join_timeout|...`",
-  "- `[ClawedCoopSessionGuard] failure_recent|...`",
+  "- `[CoopSessionGuard] startup|...`",
+  "- `[CoopSessionGuard] hook_register|...`",
+  "- `[CoopSessionGuard] state_transition|...`",
+  "- `[CoopSessionGuard] invite_handoff|...`",
+  "- `[CoopSessionGuard] guarded_call|...`",
+  "- `[CoopSessionGuard] join_failure|...`",
+  "- `[CoopSessionGuard] join_timeout|...`",
+  "- `[CoopSessionGuard] failure_recent|...`",
   "",
   "Collection path:",
   "",
   "- Primary: `Clawed\\Binaries\\Win64\\ue4ss\\UE4SS.log`",
-  "- Failure sidecar, if writable: `Clawed\\Binaries\\Win64\\ue4ss\\Mods\\ClawedCoopSessionGuard\\session-failures.log`",
+  "- Failure sidecar, if writable: `Clawed\\Binaries\\Win64\\ue4ss\\Mods\\CoopSessionGuard\\session-failures.log`",
   "",
   "Safety boundaries:",
   "",
@@ -742,7 +742,8 @@ const readme = [
   "- Does not force-close Clawed, mutate save data, or attempt to bypass server authority.",
   "- Uses only observed packaged Blueprint functions and UE4SS hooks/console commands.",
   "- Lua hooks are observational for the original UI flow; UE4SS has not been proven here to cancel original Blueprint execution.",
-  "- Host/client multiplayer behavior remains unvalidated until a two-account Steam session is tested."
+  "- No package-level player-count cap is imposed; actual maximum party size is governed by Clawed.",
+  "- Host/client multiplayer behavior remains unvalidated until tested across Clawed's supported party sizes."
 ].join("\n");
 const manifest = {
   schemaVersion: 1,
@@ -751,7 +752,7 @@ const manifest = {
   version,
   author: "Clawed Mod Manager",
   description:
-    "Prototype UE4SS coordinator that serializes Clawed co-op session intent, completes missing invite handoff, and captures failed-join diagnostics.",
+    "Prototype UE4SS coordinator that serializes Clawed co-op session intent without imposing a package-level player-count cap, completes missing invite handoff, and captures failed-join diagnostics.",
   game: "clawed",
   loader: "ue4ss",
   dependencies: [],
@@ -825,6 +826,7 @@ async function writePackage(outputDirectory) {
       "completes invite-accepted flows only when no original Join Session dispatch is observed",
       "exposes deliberate console recovery commands instead of automatic join retry loops",
       "captures latest invite/search/join payloads for controlled user-driven recovery",
+      "does not impose a package-level player-count cap",
       "records failure bundles and recent event context for support"
     ],
     safetyBoundaries: [
@@ -832,7 +834,7 @@ async function writePackage(outputDirectory) {
       "no Steam/EOS/executable/anti-cheat/GameMode/PlayerController asset patching",
       "no save, inventory, or world-item mutation",
       "observational hooks cannot guarantee original Blueprint execution is cancelled",
-      "host/client behavior unvalidated"
+      "multi-client supported-party-size behavior unvalidated"
     ],
     consoleCommands: [
       "cmm_session_status",
@@ -842,15 +844,15 @@ async function writePackage(outputDirectory) {
       "cmm_session_join_last"
     ],
     logMarkers: [
-      "[ClawedCoopSessionGuard] state_transition|...",
-      "[ClawedCoopSessionGuard] guarded_call|...",
-      "[ClawedCoopSessionGuard] join_failure|...",
-      "[ClawedCoopSessionGuard] join_timeout|...",
-      "[ClawedCoopSessionGuard] failure_recent|..."
+      "[CoopSessionGuard] state_transition|...",
+      "[CoopSessionGuard] guarded_call|...",
+      "[CoopSessionGuard] join_failure|...",
+      "[CoopSessionGuard] join_timeout|...",
+      "[CoopSessionGuard] failure_recent|..."
     ],
     logPaths: [
       "Clawed\\Binaries\\Win64\\ue4ss\\UE4SS.log",
-      "Clawed\\Binaries\\Win64\\ue4ss\\Mods\\ClawedCoopSessionGuard\\session-failures.log"
+      "Clawed\\Binaries\\Win64\\ue4ss\\Mods\\CoopSessionGuard\\session-failures.log"
     ],
     packageEntries: [
       "manifest.json",

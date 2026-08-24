@@ -118,8 +118,13 @@ export class LocalDeploymentService implements DeploymentServiceContract {
 
     if (manifest) {
       const requiresRuntime = manifestRequiresRuntime(manifest);
+      const runtimeValidationManifest = isRuntimeValidationManifest(manifest);
       if (requiresRuntime) {
-        problems.push(...runtime.problems);
+        problems.push(
+          ...(runtimeValidationManifest
+            ? runtime.problems.filter((problem) => problem.severity !== "error")
+            : runtime.problems)
+        );
       }
       const verifyProblems = await this.verifyManifestFiles(manifest);
       problems.push(...verifyProblems);
@@ -139,6 +144,8 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         ? "deploymentError"
         : fingerprint.status === "NEW_CHANGED_BUILD"
           ? "runtimeIncompatible"
+          : runtimeValidationManifest
+            ? "runtimeUnvalidated"
           : requiresRuntime &&
               runtimeBlocksDeployment(runtime.status)
           ? "runtimeIncompatible"
@@ -505,9 +512,9 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       ]);
     }
 
-    if (runtime.status !== "unvalidated") {
+    if (runtime.status !== "unvalidated" && runtime.status !== "incompatible") {
       return blockedResult(
-        runtime.status === "incompatible" ? "runtimeIncompatible" : "deploymentError",
+        "deploymentError",
         runtime.problems.length
           ? runtime.problems
           : [
@@ -519,6 +526,20 @@ export class LocalDeploymentService implements DeploymentServiceContract {
             ]
       );
     }
+    const validationRuntime =
+      runtime.status === "incompatible"
+        ? {
+            ...runtime,
+            status: "unvalidated" as const,
+            ue4ss: {
+              ...runtime.ue4ss,
+              releaseValidation: "UNVALIDATED" as const
+            },
+            problems: runtime.problems.filter(
+              (problem) => problem.severity !== "error"
+            )
+          }
+        : runtime;
 
     const transactionId = randomUUID();
     const layout = await this.storageService.getLayout();
@@ -554,7 +575,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
           gameLayout.pakDirectory
         ),
         stagingPath,
-        runtime
+        runtime: validationRuntime
       };
       const validation = await ue4ssAdapter.validateEnvironment(context);
       if (!validation.ok) {
@@ -1498,6 +1519,17 @@ function manifestRequiresRuntime(manifest: DeploymentManifest): boolean {
   }
 
   return false;
+}
+
+function isRuntimeValidationManifest(manifest: DeploymentManifest): boolean {
+  const configuration = manifest.runtimeConfiguration;
+  return (
+    manifest.profileId === "cmm-runtime-validation" &&
+    configuration.type === "ue4ss" &&
+    Array.isArray(configuration.logicalOrder) &&
+    configuration.logicalOrder.length === 1 &&
+    configuration.logicalOrder[0] === PACKAGED_RUNTIME_VALIDATION_MOD_ID
+  );
 }
 
 function runtimeBlocksDeployment(status: RuntimeStatus): boolean {

@@ -4,7 +4,8 @@ import {
   Power,
   RefreshCw,
   Rocket,
-  ShieldAlert
+  ShieldAlert,
+  XCircle
 } from "lucide-react";
 import type { ReactElement } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -109,8 +110,28 @@ function deploymentTone(
   return undefined;
 }
 
-function validationTitle(status: ValidatePackagedRuntimeResult["status"]): string {
-  switch (status) {
+function isSignatureCompatibilityFailure(
+  result: ValidatePackagedRuntimeResult
+): boolean {
+  const firstProblem = result.problems[0];
+  const detail = firstProblem?.technicalDetail ?? "";
+
+  return (
+    result.status === "incompatible" &&
+    firstProblem?.code === "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE" &&
+    (detail.includes("UE4SS pattern scan failed") ||
+      detail.includes("PS scan timed out") ||
+      detail.includes("GUObjectArray") ||
+      detail.includes("FText::FText(FString&&)"))
+  );
+}
+
+function validationTitle(result: ValidatePackagedRuntimeResult): string {
+  if (isSignatureCompatibilityFailure(result)) {
+    return "UE4SS signatures required";
+  }
+
+  switch (result.status) {
     case "validated":
       return "Runtime validated";
     case "incompatible":
@@ -119,11 +140,17 @@ function validationTitle(status: ValidatePackagedRuntimeResult["status"]): strin
       return "Runtime validation blocked";
     case "failed":
       return "Runtime validation failed";
+    case "cancelled":
+      return "Runtime validation cancelled";
   }
 }
 
 function validationMessage(result: ValidatePackagedRuntimeResult): string {
   const firstProblem = result.problems[0];
+  if (isSignatureCompatibilityFailure(result)) {
+    return "Validation completed safely and Clawed was restored to vanilla, but the packaged UE4SS runtime cannot resolve this Clawed build's engine signatures yet.";
+  }
+
   if (firstProblem) {
     return firstProblem.message;
   }
@@ -132,7 +159,46 @@ function validationMessage(result: ValidatePackagedRuntimeResult): string {
     return "The packaged UE4SS runtime is now validated for the detected Clawed build.";
   }
 
+  if (result.status === "cancelled") {
+    return "CMM stopped the validation run and restored vanilla state.";
+  }
+
   return "CMM could not validate the packaged UE4SS runtime.";
+}
+
+function validationNextStep(
+  result: ValidatePackagedRuntimeResult
+): string | undefined {
+  return (
+    result.problems[0]?.technicalDetail ??
+    result.evidencePath ??
+    undefined
+  );
+}
+
+function isRuntimeValidationNotRequired(
+  result: ValidatePackagedRuntimeResult
+): boolean {
+  return (
+    result.status === "blocked" &&
+    result.problems.some(
+      (problem) => problem.code === "UE4SS_RUNTIME_VALIDATION_NOT_REQUIRED"
+    )
+  );
+}
+
+function isValidatedPackagedRuntime(snapshot: PlaySnapshot | null): boolean {
+  return (
+    snapshot?.runtime.ue4ss?.source === "bundled" &&
+    snapshot.runtime.status === "validated"
+  );
+}
+
+function formatElapsed(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = `${seconds % 60}`.padStart(2, "0");
+
+  return `${minutes}:${remainingSeconds}`;
 }
 
 export function PlayPage(): ReactElement {
@@ -142,35 +208,84 @@ export function PlayPage(): ReactElement {
     useState<LaunchCommandResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busyCommand, setBusyCommand] = useState<BusyAction | null>(null);
+  const [validationStartedAt, setValidationStartedAt] = useState<number | null>(
+    null
+  );
+  const [validationElapsedSeconds, setValidationElapsedSeconds] = useState(0);
+  const [validationCancelRequested, setValidationCancelRequested] =
+    useState(false);
   const refreshInFlight = useRef(false);
+  const snapshotRequestId = useRef(0);
+  const runtimeValidationRunning = busyCommand === "validateRuntime";
+  const deploymentValue = runtimeValidationRunning
+    ? "Validation Running"
+    : snapshot
+      ? formatDeployment(snapshot.deploymentState)
+      : "Loading";
+  const deploymentDetail = runtimeValidationRunning
+    ? "Packaged runtime validation launch in progress"
+    : `Current launch mode: ${snapshot?.launchMode ?? "VANILLA"}`;
+  const deploymentStatusTone = runtimeValidationRunning
+    ? "warning"
+    : deploymentTone(snapshot?.deploymentState);
   const canValidateRuntime =
-    snapshot?.runtime.status === "unvalidated" &&
-    snapshot.runtime.ue4ss?.source === "bundled";
+    snapshot?.runtime.ue4ss?.source === "bundled" &&
+    (snapshot.runtime.status === "unvalidated" ||
+      snapshot.runtime.status === "incompatible");
 
-  const refreshSnapshot = useCallback(async () => {
+  const loadSnapshot = useCallback(async (): Promise<PlaySnapshot | null> => {
+    const requestId = snapshotRequestId.current + 1;
+    snapshotRequestId.current = requestId;
+    const nextSnapshot = await window.cmm
+      .getPlaySnapshot()
+      .catch((): PlaySnapshot | null => null);
+
+    if (requestId !== snapshotRequestId.current) {
+      return nextSnapshot;
+    }
+
+    if (nextSnapshot) {
+      setSnapshot(nextSnapshot);
+    } else {
+      setError("Play status is unavailable.");
+    }
+
+    return nextSnapshot;
+  }, []);
+
+  const refreshSnapshot = useCallback(async (): Promise<PlaySnapshot | null> => {
     if (refreshInFlight.current) {
-      return;
+      return null;
     }
 
     refreshInFlight.current = true;
     try {
-      const nextSnapshot = await window.cmm
-        .getPlaySnapshot()
-        .catch((): PlaySnapshot | null => null);
-
-      if (nextSnapshot) {
-        setSnapshot(nextSnapshot);
-      } else {
-        setError("Play status is unavailable.");
-      }
+      return await loadSnapshot();
     } finally {
       refreshInFlight.current = false;
     }
-  }, []);
+  }, [loadSnapshot]);
 
   useEffect(() => {
     void refreshSnapshot();
   }, [profileRevision, refreshSnapshot]);
+
+  useEffect(() => {
+    if (validationStartedAt === null) {
+      setValidationElapsedSeconds(0);
+      return;
+    }
+
+    const updateElapsed = () =>
+      setValidationElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - validationStartedAt) / 1_000))
+      );
+
+    updateElapsed();
+    const intervalId = window.setInterval(updateElapsed, 1_000);
+
+    return () => window.clearInterval(intervalId);
+  }, [validationStartedAt]);
 
   useEffect(() => {
     const pollIntervalMs =
@@ -200,7 +315,7 @@ export function PlayPage(): ReactElement {
         ...options
       });
       setCommandResult(result);
-      await refreshSnapshot();
+      await loadSnapshot();
     } catch {
       setError("The command could not be completed.");
     } finally {
@@ -210,28 +325,70 @@ export function PlayPage(): ReactElement {
 
   const runRuntimeValidation = async () => {
     setBusyCommand("validateRuntime");
+    setValidationStartedAt(Date.now());
+    setValidationCancelRequested(false);
+    setCommandResult(null);
     setError(null);
 
     try {
       const result = await window.cmm.validatePackagedRuntime();
+      const nextSnapshot = await loadSnapshot();
+      const alreadyValidated =
+        isRuntimeValidationNotRequired(result) &&
+        isValidatedPackagedRuntime(nextSnapshot);
       setCommandResult({
         kind: "launchModded",
         launchMode: "MODDED",
         lifecycleState: snapshot?.gameState === "RUNNING" ? "RUNNING" : "STOPPED",
-        status: result.status === "validated" ? "completed" : "blocked",
-        title: validationTitle(result.status),
-        message: validationMessage(result),
-        nextStep:
-          result.evidencePath ??
-          result.problems[0]?.technicalDetail ??
-          undefined,
+        status:
+          result.status === "validated" || alreadyValidated
+            ? "completed"
+            : "blocked",
+        title: alreadyValidated ? "Runtime already validated" : validationTitle(result),
+        message: alreadyValidated
+          ? "The packaged UE4SS runtime is already validated for the detected Clawed build."
+          : validationMessage(result),
+        nextStep: alreadyValidated
+          ? nextSnapshot?.runtime.ue4ss?.validation?.evidencePath
+          : validationNextStep(result),
         occurredAt: new Date().toISOString()
       });
-      await refreshSnapshot();
     } catch {
       setError("The runtime validation could not be completed.");
     } finally {
+      setValidationStartedAt(null);
+      setValidationCancelRequested(false);
       setBusyCommand(null);
+    }
+  };
+
+  const cancelRuntimeValidation = async () => {
+    if (!runtimeValidationRunning || validationCancelRequested) {
+      return;
+    }
+
+    setValidationCancelRequested(true);
+    setError(null);
+
+    try {
+      const result = await window.cmm.cancelPackagedRuntimeValidation();
+      if (result.status === "blocked") {
+        setCommandResult({
+          kind: "launchModded",
+          launchMode: "MODDED",
+          lifecycleState:
+            snapshot?.gameState === "RUNNING" ? "RUNNING" : "STOPPED",
+          status: "blocked",
+          title: validationTitle(result),
+          message: validationMessage(result),
+          nextStep: validationNextStep(result),
+          occurredAt: new Date().toISOString()
+        });
+        setValidationCancelRequested(false);
+      }
+    } catch {
+      setError("The runtime validation cancel request could not be sent.");
+      setValidationCancelRequested(false);
     }
   };
 
@@ -280,12 +437,10 @@ export function PlayPage(): ReactElement {
           value={snapshot?.profileValidity ?? "Unknown"}
         />
         <StatusCard
-          detail={`Current launch mode: ${snapshot?.launchMode ?? "VANILLA"}`}
+          detail={deploymentDetail}
           label="Deployment Status"
-          tone={deploymentTone(snapshot?.deploymentState)}
-          value={
-            snapshot ? formatDeployment(snapshot.deploymentState) : "Loading"
-          }
+          tone={deploymentStatusTone}
+          value={deploymentValue}
         />
         <StatusCard
           detail={
@@ -358,10 +513,63 @@ export function PlayPage(): ReactElement {
               ) : (
                 <CheckCircle2 aria-hidden="true" size={18} />
               )}
-              <span>Validate</span>
+              <span>{runtimeValidationRunning ? "Validating" : "Validate"}</span>
             </button>
           ) : null}
         </div>
+
+        {runtimeValidationRunning ? (
+          <div
+            aria-label="Packaged runtime validation is running"
+            aria-live="polite"
+            className="mt-4 rounded-md border border-app-accent/40 bg-app-accent/10 p-4"
+            role="status"
+          >
+            <div className="flex items-start gap-3">
+              <RefreshCw
+                aria-hidden="true"
+                className="mt-0.5 shrink-0 text-app-accent motion-safe:animate-spin"
+                size={18}
+              />
+              <div className="min-w-0">
+                <div className="font-medium">
+                  {validationCancelRequested
+                    ? "Cancelling packaged runtime validation"
+                    : "Validating packaged runtime"}
+                </div>
+                <p className="mt-1 text-sm leading-5 text-app-muted">
+                  {validationCancelRequested
+                    ? "CMM is stopping the validation run. If Clawed has already started, CMM will request a normal close before restoring vanilla."
+                    : "CMM is staging the validation marker, launching Clawed through Steam, waiting for UE4SS evidence, and restoring vanilla after the validation launch closes."}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <div className="text-xs font-medium uppercase text-app-subtle">
+                    Elapsed {formatElapsed(validationElapsedSeconds)}
+                  </div>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-text hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={validationCancelRequested}
+                    onClick={() => void cancelRuntimeValidation()}
+                    type="button"
+                  >
+                    {validationCancelRequested ? (
+                      <RefreshCw
+                        aria-hidden="true"
+                        className="motion-safe:animate-spin"
+                        size={16}
+                      />
+                    ) : (
+                      <XCircle aria-hidden="true" size={16} />
+                    )}
+                    <span>
+                      {validationCancelRequested ? "Cancelling" : "Cancel"}
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         {commandResult ? (
           <div
@@ -401,14 +609,25 @@ export function PlayPage(): ReactElement {
                 </button>
               </div>
             ) : null}
-            {commandResult.canOpenRuntimeValidationFlow ? (
+            {commandResult.canOpenRuntimeValidationFlow &&
+            !isValidatedPackagedRuntime(snapshot) ? (
               <div className="mt-4 flex flex-wrap gap-3">
                 <button
-                  className="h-10 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+                  className="inline-flex h-10 items-center gap-2 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText hover:brightness-105 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:cursor-not-allowed disabled:opacity-60"
+                  disabled={busyCommand !== null}
                   onClick={() => void runRuntimeValidation()}
                   type="button"
                 >
-                  Validate
+                  {runtimeValidationRunning ? (
+                    <RefreshCw
+                      aria-hidden="true"
+                      className="motion-safe:animate-spin"
+                      size={16}
+                    />
+                  ) : null}
+                  <span>
+                    {runtimeValidationRunning ? "Validating" : "Validate"}
+                  </span>
                 </button>
               </div>
             ) : null}
