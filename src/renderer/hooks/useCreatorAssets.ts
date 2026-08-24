@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 
 import type {
   CreatorAssetReportOutput,
@@ -28,8 +28,25 @@ export function useCreatorAssets() {
   const modelPreview = useCreatorAssetStore((state) => state.modelPreview);
   const modelBusy = useCreatorAssetStore((state) => state.modelBusy);
   const modelError = useCreatorAssetStore((state) => state.modelError);
+  const visibleAssetIds = useCreatorAssetStore((state) => state.visibleAssetIds);
+  const visibleModelPreviews = useCreatorAssetStore(
+    (state) => state.visibleModelPreviews
+  );
+  const visibleModelBusyIds = useCreatorAssetStore(
+    (state) => state.visibleModelBusyIds
+  );
+  const visibleModelErrors = useCreatorAssetStore(
+    (state) => state.visibleModelErrors
+  );
   const exportPlan = useCreatorAssetStore((state) => state.exportPlan);
   const meshExport = useCreatorAssetStore((state) => state.meshExport);
+  const meshPackageExport = useCreatorAssetStore(
+    (state) => state.meshPackageExport
+  );
+  const mappingsProgress = useCreatorAssetStore(
+    (state) => state.mappingsProgress
+  );
+  const mappingsDump = useCreatorAssetStore((state) => state.mappingsDump);
   const report = useCreatorAssetStore((state) => state.report);
   const filters = useCreatorAssetStore((state) => state.filters);
   const selectedAssetId = useCreatorAssetStore(
@@ -37,6 +54,14 @@ export function useCreatorAssets() {
   );
   const busy = useCreatorAssetStore((state) => state.busy);
   const error = useCreatorAssetStore((state) => state.error);
+
+  useEffect(
+    () =>
+      window.cmm.onCreatorMappingsProgress((progress) => {
+        useCreatorAssetStore.getState().setMappingsProgress(progress);
+      }),
+    []
+  );
 
   const loadModelPreview = useCallback(async (assetId: string | null) => {
     const store = useCreatorAssetStore.getState();
@@ -90,6 +115,7 @@ export function useCreatorAssets() {
     store.setBusy(true);
     try {
       store.clearTree();
+      store.clearVisibleModels();
       const nextSnapshot = await window.cmm.getCreatorAssetRegistrySnapshot();
       store.setSnapshot(nextSnapshot);
       store.setError(null);
@@ -185,6 +211,102 @@ export function useCreatorAssets() {
     []
   );
 
+  const toggleVisibleAsset = useCallback(async (assetId: string) => {
+    const store = useCreatorAssetStore.getState();
+    if (store.visibleAssetIds.includes(assetId)) {
+      store.setVisibleAsset(assetId, false);
+      return;
+    }
+
+    store.setVisibleAsset(assetId, true);
+    store.setVisibleModelBusy(assetId, true);
+    store.setVisibleModelError(assetId, null);
+    try {
+      const nextPreview = await window.cmm.getCreatorModelPreview({ assetId });
+      if (useCreatorAssetStore.getState().visibleAssetIds.includes(assetId)) {
+        store.setVisibleModelPreview(assetId, nextPreview);
+      }
+      store.setError(null);
+    } catch {
+      if (useCreatorAssetStore.getState().visibleAssetIds.includes(assetId)) {
+        store.setVisibleModelError(assetId, "Model preview is unavailable.");
+      }
+    } finally {
+      store.setVisibleModelBusy(assetId, false);
+    }
+  }, []);
+
+  const clearVisibleModels = useCallback(() => {
+    useCreatorAssetStore.getState().clearVisibleModels();
+  }, []);
+
+  const exportVisiblePackage = useCallback(async () => {
+    const store = useCreatorAssetStore.getState();
+    const assetIds = store.visibleAssetIds;
+    if (!assetIds.length) {
+      store.setError("No visible Creator models are selected for package export.");
+      return;
+    }
+
+    store.setBusy(true);
+    try {
+      store.setMeshPackageExport(
+        await window.cmm.chooseAndExportCreatorMeshPackage({ assetIds })
+      );
+      store.setError(null);
+    } catch {
+      store.setError("Creator model package export is unavailable.");
+    } finally {
+      store.setBusy(false);
+    }
+  }, []);
+
+  const generateMappings = useCallback(async () => {
+    const store = useCreatorAssetStore.getState();
+    store.setBusy(true);
+    store.setMappingsDump(null);
+    store.setMappingsProgress({
+      stage: "checking",
+      status: "running",
+      message: "Checking Clawed install and existing mappings.",
+      detail: null,
+      mappingsPath: null,
+      evidencePath: null
+    });
+    try {
+      const nextDump = await window.cmm.generateCreatorMappings();
+      store.setMappingsDump(nextDump);
+      if (nextDump.status === "generated" || nextDump.status === "ready") {
+        store.setMappingsProgress({
+          stage: "complete",
+          status: "done",
+          message: "Mappings generation complete.",
+          detail: null,
+          mappingsPath: nextDump.mappingsPath,
+          evidencePath: nextDump.evidencePath
+        });
+        const selected = store.selectedAssetId;
+        await refresh();
+        if (selected) {
+          await selectAssetById(selected, loadModelPreview);
+        }
+      }
+      store.setError(null);
+    } catch {
+      store.setError("Creator mappings generation is unavailable.");
+      store.setMappingsProgress({
+        stage: "failed",
+        status: "failed",
+        message: "Creator mappings generation is unavailable.",
+        detail: null,
+        mappingsPath: null,
+        evidencePath: null
+      });
+    } finally {
+      store.setBusy(false);
+    }
+  }, [loadModelPreview, refresh]);
+
   const setFilters = useCallback(
     (nextFilters: Partial<CreatorAssetFilters>) => {
       const store = useCreatorAssetStore.getState();
@@ -205,8 +327,15 @@ export function useCreatorAssets() {
     modelPreview,
     modelBusy,
     modelError,
+    visibleAssetIds,
+    visibleModelPreviews,
+    visibleModelBusyIds,
+    visibleModelErrors,
     exportPlan,
     meshExport,
+    meshPackageExport,
+    mappingsProgress,
+    mappingsDump,
     report,
     filters,
     selectedAssetId,
@@ -218,6 +347,10 @@ export function useCreatorAssets() {
     selectAsset,
     planExport,
     exportMesh,
+    toggleVisibleAsset,
+    clearVisibleModels,
+    exportVisiblePackage,
+    generateMappings,
     copyReport,
     setFilters
   };
@@ -237,6 +370,7 @@ async function selectAssetById(
     await loadModelPreview(assetId);
     store.setExportPlan(null);
     store.setMeshExport(null);
+    store.setMeshPackageExport(null);
     store.setReport(null);
     store.setError(null);
   } catch {

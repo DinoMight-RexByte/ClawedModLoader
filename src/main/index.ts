@@ -9,15 +9,22 @@ import {
   startLocalCrashReporter
 } from "./services/crashDiagnostics";
 import { JsonlLifecycleLogger } from "./services/lifecycleLogger";
+import type { WindowsProcessSupervisor } from "./services/processSupervisor";
 import { createMainServices } from "./services/serviceRegistry";
+import { cleanupAppStorageArtifacts } from "./services/storageCleanupService";
 import { getAllowedUserDataOverride } from "./services/storageService";
 
 const rendererDevServerUrl = process.env.VITE_DEV_SERVER_URL;
+const appExitShutdownTimeoutMs = 30_000;
+const appExitShutdownPollMs = 250;
 
 applyUserDataOverride();
 const crashDumpsDirectory = startLocalCrashReporter();
 
-function createMainWindow(logger: JsonlLifecycleLogger): BrowserWindow {
+function createMainWindow(
+  logger: JsonlLifecycleLogger,
+  processSupervisor: WindowsProcessSupervisor
+): BrowserWindow {
   const window = new BrowserWindow({
     width: 1280,
     height: 750,
@@ -47,6 +54,7 @@ function createMainWindow(logger: JsonlLifecycleLogger): BrowserWindow {
     return { action: "deny" };
   });
   registerWindowCrashDiagnostics(window, logger);
+  registerUserCloseShutdown(window, processSupervisor, logger);
 
   if (rendererDevServerUrl) {
     void window.loadURL(rendererDevServerUrl);
@@ -55,6 +63,46 @@ function createMainWindow(logger: JsonlLifecycleLogger): BrowserWindow {
   }
 
   return window;
+}
+
+function registerUserCloseShutdown(
+  window: BrowserWindow,
+  processSupervisor: WindowsProcessSupervisor,
+  logger: JsonlLifecycleLogger
+): void {
+  let shutdownStarted = false;
+  let shutdownComplete = false;
+
+  window.on("close", (event) => {
+    if (shutdownComplete || process.platform === "darwin") {
+      return;
+    }
+
+    event.preventDefault();
+    window.hide();
+    if (shutdownStarted) {
+      return;
+    }
+
+    shutdownStarted = true;
+    void processSupervisor
+      .shutdownAppExitManagedProcess(
+        appExitShutdownTimeoutMs,
+        appExitShutdownPollMs
+      )
+      .catch((error) =>
+        logger.log({
+          category: "processSupervisor",
+          action: "app_exit_shutdown_failed",
+          result: "failed",
+          message: error instanceof Error ? error.message : String(error)
+        })
+      )
+      .finally(() => {
+        shutdownComplete = true;
+        window.close();
+      });
+  });
 }
 
 function applyUserDataOverride(): void {
@@ -77,12 +125,16 @@ app.whenReady().then(async () => {
   if ((await services.settingsService.getSettings()).autoUpdatePackagedRuntime) {
     await services.runtimeManager.ensureBundledUe4ssRuntime();
   }
+  await cleanupAppStorageArtifacts(services.storageService, logger);
   registerIpcHandlers(services);
-  createMainWindow(logger);
+  createMainWindow(logger, services.processSupervisor as WindowsProcessSupervisor);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow(logger);
+      createMainWindow(
+        logger,
+        services.processSupervisor as WindowsProcessSupervisor
+      );
     }
   });
 });

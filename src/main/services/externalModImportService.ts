@@ -264,7 +264,8 @@ export class LocalExternalModImportService
         async (outputPath) => {
           const bytes = await readFile(request.packagePath);
           await writeFile(outputPath, bytes);
-        }
+        },
+        request.replacement
       );
     }
 
@@ -300,9 +301,13 @@ export class LocalExternalModImportService
       };
     }
 
-    return this.importGeneratedPackage(inspection, async (outputPath) => {
-      await this.writeGeneratedClawedMod(outputPath, conversionPlan, inspection);
-    });
+    return this.importGeneratedPackage(
+      inspection,
+      async (outputPath) => {
+        await this.writeGeneratedClawedMod(outputPath, conversionPlan, inspection);
+      },
+      request.replacement
+    );
   }
 
   private async inspectCanonicalPackage(
@@ -576,13 +581,16 @@ export class LocalExternalModImportService
 
   private rawPakPlan(inspection: ExternalModInspectionResult): ConversionPlan {
     const sourceName = inspection.fileName;
-    const baseManifest = this.createGeneratedManifest({
-      prefix: "external",
-      sourceName,
-      name: inspection.detectedName ?? displayNameFromFileName(sourceName),
-      version: inspection.detectedVersion ?? GENERATED_EXTERNAL_VERSION,
-      loader: "pak"
-    });
+    const baseManifest = withPackageIdentity(
+      this.createGeneratedManifest({
+        prefix: "external",
+        sourceName,
+        name: inspection.detectedName ?? displayNameFromFileName(sourceName),
+        version: inspection.detectedVersion ?? GENERATED_EXTERNAL_VERSION,
+        loader: "pak"
+      }),
+      externalImportPackageIdentity("rawPak", inspection.sha256)
+    );
     const payloadPath = `payload/Content/Paks/${sourceName}`;
     const manifest = withGeneratedCreatorAssets(baseManifest, {
       format: "rawPak",
@@ -625,19 +633,22 @@ export class LocalExternalModImportService
     }
 
     const prefix = inspection.format === "thunderstore" ? "thunderstore" : "external";
-    const baseManifest = this.createGeneratedManifest({
-      prefix,
-      sourceName: thunderstore?.name ?? inspection.fileName,
-      name:
-        thunderstore?.name ??
-        inspection.detectedName ??
-        displayNameFromFileName(inspection.fileName),
-      version:
-        thunderstore?.version_number ??
-        inspection.detectedVersion ??
-        GENERATED_EXTERNAL_VERSION,
-      loader
-    });
+    const baseManifest = withPackageIdentity(
+      this.createGeneratedManifest({
+        prefix,
+        sourceName: thunderstore?.name ?? inspection.fileName,
+        name:
+          thunderstore?.name ??
+          inspection.detectedName ??
+          displayNameFromFileName(inspection.fileName),
+        version:
+          thunderstore?.version_number ??
+          inspection.detectedVersion ??
+          GENERATED_EXTERNAL_VERSION,
+        loader
+      }),
+      externalImportPackageIdentity(inspection.format, inspection.sha256)
+    );
     const payloadPaths = mappedPayloadPaths(context.entries, loader, baseManifest.id);
     const manifest = withGeneratedCreatorAssets(baseManifest, {
       format: inspection.format,
@@ -714,7 +725,8 @@ export class LocalExternalModImportService
 
   private async importGeneratedPackage(
     inspection: ExternalModInspectionResult,
-    writePackage: (outputPath: string) => Promise<void>
+    writePackage: (outputPath: string) => Promise<void>,
+    replacement?: ImportModPackageRequest["replacement"]
   ): Promise<ImportModPackageResult> {
     const layout = await this.storageService.getLayout();
     const stagingPath = path.join(
@@ -731,7 +743,8 @@ export class LocalExternalModImportService
       await writePackage(outputPath);
       return this.withInspectionProblems(
         await this.modLibraryService.importModPackage({
-          packagePath: outputPath
+          packagePath: outputPath,
+          replacement
         }),
         inspection
       );
@@ -952,6 +965,27 @@ function withGeneratedCreatorAssets(
     ...manifest,
     creatorAssets: generatedCreatorAssets(manifest, options)
   });
+}
+
+function withPackageIdentity(
+  manifest: ClawedModManifestV1,
+  packageIdentity: NonNullable<ClawedModManifestV1["packageIdentity"]>
+): ClawedModManifestV1 {
+  return ClawedModManifestV1Schema.parse({
+    ...manifest,
+    packageIdentity
+  });
+}
+
+function externalImportPackageIdentity(
+  format: ExternalModFormat,
+  sourceSha256: string | null
+): NonNullable<ClawedModManifestV1["packageIdentity"]> {
+  return {
+    schemaVersion: 1,
+    id: `cmm:external:${format}:${sourceSha256 ?? "unknown"}`,
+    source: "externalImport"
+  };
 }
 
 function generatedCreatorAssets(

@@ -1,4 +1,5 @@
 import { app } from "electron";
+import { existsSync, readdirSync } from "node:fs";
 import path from "node:path";
 
 import type {
@@ -7,6 +8,7 @@ import type {
 } from "../../shared/contracts/deployment";
 import type { CoreServices } from "../../shared/contracts/services";
 import { ClawedGameAdapter } from "../adapters/clawed/clawedGameAdapter";
+import { Cue4ParseMeshDecoder } from "../adapters/unreal/cue4parseMeshDecoder";
 import { LooseFileDeploymentAdapter } from "../adapters/unreal/looseFileDeploymentAdapter";
 import { PakDeploymentAdapter } from "../adapters/unreal/pakDeploymentAdapter";
 import { UE4SSDeploymentAdapter } from "../adapters/ue4ss/ue4ssDeploymentAdapter";
@@ -21,6 +23,7 @@ import { JsonlLifecycleLogger } from "./lifecycleLogger";
 import { SteamLaunchService } from "./launchService";
 import { LocalModLibraryService } from "./modLibraryService";
 import { LocalModpackService } from "./modpackService";
+import { PackagedRuntimeValidationService } from "./packagedRuntimeValidationService";
 import { WindowsProcessPlatform } from "./processPlatform";
 import { WindowsProcessSupervisor } from "./processSupervisor";
 import {
@@ -31,8 +34,9 @@ import { LocalRuntimeManager } from "./runtimeManager";
 import { JsonSettingsService } from "./settingsService";
 import { ElectronStorageService } from "./storageService";
 import { WindowsSteamPathProvider } from "./steamPathProvider";
+import { LocalUnrealMappingsService } from "./unrealMappingsService";
 
-const BUNDLED_UE4SS_VERSION = "ue4ss-experimental-latest-1c1a1497";
+const BUNDLED_UE4SS_VERSION = "ue4ss-v3.0.1-1028-gd7e7826d";
 
 export type MainServiceDependencies = Omit<
   CoreServices,
@@ -74,12 +78,9 @@ export function createMainServices(options?: {
     bundledUe4ssRuntimePath: getBundledUe4ssRuntimePath(),
     bundledUe4ssVersion: BUNDLED_UE4SS_VERSION,
     bundledUe4ssCompatibility: {
-      status: "validated",
-      validatedSteamBuildIds: ["24719259", "24742251"],
+      status: "unvalidated",
       message:
-        "Packaged UE4SS experimental-latest commit 1c1a1497 loads Lua mods and honors generated mods.txt Lua startup order on Clawed builds 24719259 and 24742251.",
-      technicalDetail:
-        "Live validation on 2026-08-13 loaded UE4SS.dll from the official nested layout through the local dwmapi proxy, detected UE 5.5, started CMMReleaseValidation, ran ExecuteInGameThread, and completed FindFirstOf(GameEngine). Follow-up CMM service and Electron-path validations deployed two generated .clawedmod Lua packages and observed UE4SS start them in CMM profile order from generated mods.txt. Runtime feature probes on 2026-08-15 revalidated UE4SS hook callbacks on Clawed build 24742251."
+        "Packaged UE4SS v3.0.1-1028-gd7e7826d is installed for runtime validation, but this bundled default has not been live validated against the current Clawed build."
     }
   });
   const clawedGameAdapter = new ClawedGameAdapter();
@@ -108,13 +109,49 @@ export function createMainServices(options?: {
     { settingsService },
     clawedGameAdapter
   );
+  const packagedRuntimeValidationService = new PackagedRuntimeValidationService(
+    storageService,
+    deploymentService,
+    runtimeManager,
+    processSupervisor,
+    processPlatform,
+    logger
+  );
+  const unrealMappingsService = new LocalUnrealMappingsService(
+    storageService,
+    gameLocator,
+    deploymentService,
+    processSupervisor,
+    processPlatform,
+    logger
+  );
   const assetRegistryService = new LocalAssetRegistryService(
     modLibraryService,
     profileService,
     loadOrderService,
     deploymentService,
     {
-      mapRoot: getBundledClawedFileMapPath()
+      mapRoot: getBundledClawedFileMapPath(),
+      baseGameMeshDecoder: new Cue4ParseMeshDecoder({
+        sidecarPath: getBundledCue4ParseDecoderPath(),
+        unrealVersion: "GAME_UE5_5",
+        aesKey: process.env.CMM_CUE4PARSE_AES_KEY ?? null,
+        resolveMappingsPath: async () => {
+          const bundled = getBundledCue4ParseMappingsPath();
+          if (bundled) {
+            return bundled;
+          }
+          const discovery = await gameLocator.discover();
+          return getClawedRuntimeMappingsPath(
+            clawedGameAdapter.getLayout(discovery).binaryDirectory
+          );
+        },
+        resolveArchiveRoot: async () => {
+          const discovery = await gameLocator.discover();
+          return clawedGameAdapter.getLayout(discovery).pakDirectory;
+        }
+      }),
+      logger
     }
   );
   const dependencies: MainServiceDependencies = {
@@ -126,9 +163,13 @@ export function createMainServices(options?: {
       processPlatform,
       logger,
       undefined,
-      deploymentService
+      deploymentService,
+      settingsService,
+      packagedRuntimeValidationService
     ),
     deploymentService,
+    packagedRuntimeValidationService,
+    unrealMappingsService,
     runtimeManager,
     modLibraryService,
     externalImportService,
@@ -190,5 +231,86 @@ function getBundledClawedFileMapPath(): string {
     ".codex",
     "clawed-game-file-map",
     "20260814-current"
+  );
+}
+
+function getBundledCue4ParseDecoderPath(): string {
+  const configured = process.env.CMM_CUE4PARSE_DECODER_PATH;
+  if (configured) {
+    return path.resolve(configured);
+  }
+
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string;
+  };
+
+  if (app.isPackaged && electronProcess.resourcesPath) {
+    return path.join(
+      electronProcess.resourcesPath,
+      "unreal-decoder",
+      "CmmUnrealDecoder.exe"
+    );
+  }
+
+  return path.join(process.cwd(), "assets", "unreal-decoder", "CmmUnrealDecoder.exe");
+}
+
+function getBundledCue4ParseMappingsPath(): string | null {
+  const configured = process.env.CMM_CUE4PARSE_MAPPINGS;
+  if (configured) {
+    return path.resolve(configured);
+  }
+
+  const mappingRoot = path.join(path.dirname(getBundledCue4ParseDecoderPath()), "mappings");
+  if (!existsSync(mappingRoot)) {
+    return null;
+  }
+
+  const mappings = readdirSync(mappingRoot, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".usmap"))
+    .map((entry) => path.join(mappingRoot, entry.name));
+  return (
+    mappings.find((mapping) => path.basename(mapping).toLowerCase().includes("clawed")) ??
+    mappings[0] ??
+    null
+  );
+}
+
+function getClawedRuntimeMappingsPath(binaryDirectory: string | null): string | null {
+  if (!binaryDirectory) {
+    return null;
+  }
+
+  const stable = firstExistingPath([
+    path.join(binaryDirectory, "Mappings.usmap"),
+    path.join(binaryDirectory, "ue4ss", "Mappings.usmap")
+  ]);
+  if (stable) {
+    return stable;
+  }
+
+  return findFirstUsmap([
+    binaryDirectory,
+    path.join(binaryDirectory, "ue4ss")
+  ]);
+}
+
+function firstExistingPath(candidates: string[]): string | null {
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function findFirstUsmap(directories: string[]): string | null {
+  const mappings = directories.flatMap((directory) => {
+    if (!existsSync(directory)) {
+      return [];
+    }
+    return readdirSync(directory, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".usmap"))
+      .map((entry) => path.join(directory, entry.name));
+  });
+  return (
+    mappings.find((mapping) => path.basename(mapping).toLowerCase().includes("clawed")) ??
+    mappings[0] ??
+    null
   );
 }

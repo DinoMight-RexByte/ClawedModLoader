@@ -44,7 +44,8 @@ describe("settings service", () => {
 
     expect(settings).toEqual({
       manualGameDirectory: "C:\\Games\\Clawed",
-      autoUpdatePackagedRuntime: true
+      autoUpdatePackagedRuntime: true,
+      autoValidatePackagedRuntime: false
     });
   });
 
@@ -61,5 +62,20 @@ describe("settings service", () => {
 
     expect(settings.autoUpdatePackagedRuntime).toBe(false);
     expect(raw.autoUpdatePackagedRuntime).toBe(false);
+  });
+
+  it("persists packaged runtime auto validation preference", async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-settings-"));
+    const service = new JsonSettingsService(
+      new FakeStorageService(createStorageLayout(tempRoot))
+    );
+
+    const settings = await service.setAutoValidatePackagedRuntime(false);
+    const raw = JSON.parse(
+      await readFile(path.join(tempRoot, "settings.json"), "utf8")
+    );
+
+    expect(settings.autoValidatePackagedRuntime).toBe(false);
+    expect(raw.autoValidatePackagedRuntime).toBe(false);
   });
 });

@@ -30,6 +30,25 @@ function runtimeSourceLabel(runtime: RuntimeSnapshot | null): string {
     : "User selected";
 }
 
+function runtimeStatusLabel(runtime: RuntimeSnapshot | null): string {
+  switch (runtime?.status) {
+    case "missing":
+      return "Missing";
+    case "invalid":
+      return "Invalid";
+    case "unvalidated":
+      return "Unvalidated";
+    case "validated":
+      return "Validated";
+    case "incompatible":
+      return "Incompatible";
+    case "configured":
+      return "Configured";
+    default:
+      return "Checking";
+  }
+}
+
 export function SettingsPage(): ReactElement {
   const themeMode = useAppStore((state) => state.themeMode);
   const accentColor = useAppStore((state) => state.accentColor);
@@ -146,6 +165,21 @@ export function SettingsPage(): ReactElement {
       setSettings(await window.cmm.setAutoUpdatePackagedRuntime({ enabled }));
     } catch {
       setSettingsError("The runtime update preference could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setAutoValidatePackagedRuntime = async (
+    enabled: boolean
+  ): Promise<void> => {
+    setBusy(true);
+    setSettingsError(null);
+
+    try {
+      setSettings(await window.cmm.setAutoValidatePackagedRuntime({ enabled }));
+    } catch {
+      setSettingsError("The runtime validation preference could not be saved.");
     } finally {
       setBusy(false);
     }
@@ -302,7 +336,7 @@ export function SettingsPage(): ReactElement {
           <div>
             <h2 className="text-base font-semibold">UE4SS Runtime</h2>
             <p className="mt-1 text-sm text-app-muted">
-              Status: {runtime?.status ?? "Checking"}. Use the packaged
+              Status: {runtimeStatusLabel(runtime)}. Use the packaged
               runtime or replace it with a UE4SS release ZIP.
             </p>
           </div>
@@ -354,6 +388,39 @@ export function SettingsPage(): ReactElement {
             </dd>
           </div>
           <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Auto validate</dt>
+            <dd>
+              <label className="flex max-w-2xl items-start gap-3 rounded-md border border-app-border bg-app-surfaceRaised p-3">
+                <input
+                  checked={settings?.autoValidatePackagedRuntime ?? false}
+                  className="mt-1 h-4 w-4 accent-app-accent"
+                  disabled={busy || !settings}
+                  onChange={(event) =>
+                    void setAutoValidatePackagedRuntime(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span className="grid gap-1">
+                  <span className="text-sm font-medium text-app-text">
+                    Always validate runtime automatically
+                  </span>
+                  <span className="text-sm text-app-muted">
+                    When enabled, packaged-runtime validation errors may rerun
+                    the temporary read-only validation launch automatically.
+                    Unvalidated or different runtimes do not block Launch
+                    Modded by themselves.
+                  </span>
+                </span>
+              </label>
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">State</dt>
+            <dd>
+              <FieldValue value={runtimeStatusLabel(runtime)} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
             <dt className="text-sm text-app-subtle">Source</dt>
             <dd>
               <FieldValue value={runtimeSourceLabel(runtime)} />
@@ -369,6 +436,24 @@ export function SettingsPage(): ReactElement {
             <dt className="text-sm text-app-subtle">Install path</dt>
             <dd>
               <FieldValue value={runtime?.ue4ss?.installPath ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Validation</dt>
+            <dd>
+              <FieldValue value={runtime?.ue4ss?.releaseValidation ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Validated build</dt>
+            <dd>
+              <FieldValue value={runtime?.ue4ss?.validation?.steamBuildId ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Evidence</dt>
+            <dd>
+              <FieldValue value={runtime?.ue4ss?.validation?.evidencePath ?? null} />
             </dd>
           </div>
         </dl>

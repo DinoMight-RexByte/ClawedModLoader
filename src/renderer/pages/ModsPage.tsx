@@ -17,13 +17,19 @@ import type {
   InstalledModVersion,
   ModLoader,
   ModOperationResult,
+  PackageIdentityReplacementRequest,
   ModProblem
 } from "../../shared/contracts/app";
+import { ModalDialog } from "../components/ModalDialog";
 import { ProblemDetails } from "../components/ProblemDetails";
 import { useAppStore } from "../stores/appStore";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
 type LoaderFilter = "all" | ModLoader;
+type PendingIdentityReplacement = {
+  packagePath: string;
+  result: ImportModPackageResult;
+};
 
 function importResultMessage(result: ImportModPackageResult): string {
   if (result.status === "installed") {
@@ -34,6 +40,9 @@ function importResultMessage(result: ImportModPackageResult): string {
   }
   if (result.status === "duplicateDifferentHash") {
     return "A same-version package is installed, but the selected file is different.";
+  }
+  if (result.status === "needsReplacementConfirmation") {
+    return "CMM found an installed mod with the same package identity.";
   }
   return "Import did not complete.";
 }
@@ -244,6 +253,8 @@ export function ModsPage(): ReactElement {
   const [dragActive, setDragActive] = useState(false);
   const [problems, setProblems] = useState<ModProblem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [pendingReplacement, setPendingReplacement] =
+    useState<PendingIdentityReplacement | null>(null);
   const [selectedMod, setSelectedMod] = useState<InstalledModVersion | null>(
     null
   );
@@ -288,9 +299,23 @@ export function ModsPage(): ReactElement {
     });
   }, [enabledFilter, loaderFilter, mods, search]);
 
-  const handleImportResult = async (result: ImportModPackageResult) => {
+  const handleImportResult = async (
+    result: ImportModPackageResult,
+    packagePath?: string
+  ) => {
     setMessage(importResultMessage(result));
     setProblems(result.problems);
+
+    if (
+      result.status === "needsReplacementConfirmation" &&
+      packagePath &&
+      result.packageIdentityId
+    ) {
+      setPendingReplacement({ packagePath, result });
+      return;
+    }
+
+    setPendingReplacement(null);
     bumpProfileRevision();
     await refreshMods();
   };
@@ -304,11 +329,113 @@ export function ModsPage(): ReactElement {
     }
   };
 
-  const importPackagePath = async (packagePath: string) => {
-    await handleImportResult(
-      await window.cmm.importExternalModPackage({ packagePath })
-    );
+  const importPackagePath = async (
+    packagePath: string,
+    replacement?: PackageIdentityReplacementRequest
+  ): Promise<ImportModPackageResult> => {
+    const result = await window.cmm.importExternalModPackage({
+      packagePath,
+      replacement
+    });
+    await handleImportResult(result, packagePath);
+    return result;
   };
+
+  const confirmIdentityReplacement = async () => {
+    const pending = pendingReplacement;
+    const packageIdentityId = pending?.result.packageIdentityId;
+    if (!pending || !packageIdentityId) {
+      return;
+    }
+
+    setBusy(true);
+    try {
+      await importPackagePath(pending.packagePath, {
+        action: "replaceMatchingIdentity",
+        packageIdentityId
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelIdentityReplacement = () => {
+    setPendingReplacement(null);
+    setMessage("Import cancelled.");
+    setProblems([
+      {
+        severity: "info",
+        code: "PACKAGE_IDENTITY_REPLACEMENT_CANCELLED",
+        message: "Mod import was cancelled before replacing installed mods."
+      }
+    ]);
+  };
+
+  const replacementCandidates = pendingReplacement?.result.replacementCandidates ?? [];
+
+  const replacementDetail = pendingReplacement
+    ? replacementCandidates.length === 1
+      ? "One installed mod version has the same package identity."
+      : `${replacementCandidates.length} installed mod versions have the same package identity.`
+    : undefined;
+
+  const replacementProblemDetails = pendingReplacement
+    ? pendingReplacement.result.problems
+    : [];
+
+  const replacementCandidateList = replacementCandidates.map((candidate) => (
+    <li
+      className="grid gap-1 border-t border-app-border py-3 text-sm first:border-t-0"
+      key={`${candidate.id}-${candidate.version}`}
+    >
+      <span className="font-medium text-app-text">{candidate.name}</span>
+      <span className="break-all font-mono text-xs text-app-muted">
+        {candidate.id} / {candidate.version}
+      </span>
+    </li>
+  ));
+
+  const replacementDialog = pendingReplacement ? (
+    <ModalDialog
+      describedById="mod-replacement-description"
+      description="Display names are not used for this replacement decision."
+      labelledById="mod-replacement-title"
+      title="Replace Installed Mod?"
+    >
+      <div className="mt-5 grid gap-4">
+        {replacementDetail ? (
+          <p className="break-all text-sm text-app-muted">
+            {replacementDetail}
+          </p>
+        ) : null}
+        <ProblemDetails problems={replacementProblemDetails} />
+        {replacementCandidateList.length ? (
+          <div>
+            <h3 className="text-sm font-semibold">Matching Installed Mods</h3>
+            <ul className="mt-2">{replacementCandidateList}</ul>
+          </div>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <button
+            className="h-10 rounded-md border border-app-border px-4 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+            disabled={busy}
+            onClick={cancelIdentityReplacement}
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            className="h-10 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+            disabled={busy}
+            onClick={() => void confirmIdentityReplacement()}
+            type="button"
+          >
+            Replace Matching Mods
+          </button>
+        </div>
+      </div>
+    </ModalDialog>
+  ) : null;
 
   const handleDrop = async (event: React.DragEvent<HTMLElement>) => {
     event.preventDefault();
@@ -330,7 +457,10 @@ export function ModsPage(): ReactElement {
       }
 
       for (const packagePath of packagePaths) {
-        await importPackagePath(packagePath);
+        const result = await importPackagePath(packagePath);
+        if (result.status === "needsReplacementConfirmation") {
+          break;
+        }
       }
     } finally {
       setBusy(false);
@@ -378,6 +508,7 @@ export function ModsPage(): ReactElement {
 
   return (
     <div className="flex flex-1 flex-col gap-5">
+      {replacementDialog}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-sm font-medium text-app-accent">Mods</p>

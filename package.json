@@ -21,6 +21,7 @@
     "test:live:clawed:service": "cross-env CMM_LIVE_CLAWED_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveDeployment.test.ts",
     "test:live:clawed:electron": "npm run build && cross-env CMM_LIVE_CLAWED_ELECTRON_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveElectron.test.ts",
     "test:live:clawed:external-ue4ss": "cross-env CMM_LIVE_CLAWED_EXTERNAL_UE4SS_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveExternalUe4ssZip.test.ts",
+    "test:live:clawed:user-runtime": "cross-env CMM_LIVE_CLAWED_USER_RUNTIME_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveUserUe4ssRuntime.test.ts",
     "test:live:clawed:pak-order": "cross-env CMM_LIVE_CLAWED_PAK_ORDER=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLivePakOrder.test.ts",
     "test:live:clawed:pak-new-package": "cross-env CMM_LIVE_CLAWED_PAK_ORDER=1 CMM_PAK_ORDER_CONTAINER_FORMAT=iostore CMM_PAK_ORDER_INCLUDE_ASSET_REGISTRY=1 CMM_PAK_ORDER_PROBE_PACKAGE=/Game/CMMNewPackageValidation/Textures/CMMNewTexture vitest run --config vitest.live.config.ts scripts/live-validation/cmmLivePakOrder.test.ts",
     "test:live:clawed:runtime-features": "cross-env CMM_LIVE_CLAWED_RUNTIME_FEATURES=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveRuntimeFeatures.test.ts",
@@ -28,10 +29,12 @@
     "test:live:clawed:visible-electron": "npm run build && cross-env CMM_LIVE_CLAWED_ELECTRON_VISIBLE_VALIDATION=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmLiveElectronVisibleMod.test.ts",
     "test:live:clawed:character": "cross-env CMM_LIVE_CLAWED_CHARACTER_RESEARCH=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmCharacterResearch.test.ts",
     "test:live:clawed:restore": "cross-env CMM_LIVE_CLAWED_RESTORE=1 vitest run --config vitest.live.config.ts scripts/live-validation/cmmRestoreActiveDeployment.test.ts",
+    "test:live:creator-viewport-ankylosaurus": "cross-env CMM_CREATOR_VIEWPORT_ANKYLO_VISUAL=1 playwright test tests/e2e/creator-ankylosaurus-visual.spec.ts",
     "test:e2e": "playwright test --pass-with-no-tests",
     "build:main": "vite build --config vite.main.config.ts",
     "build:preload": "vite build --config vite.preload.config.ts",
     "build:renderer": "vite build --config vite.renderer.config.ts",
+    "build:unreal-decoder": "dotnet publish tools/unreal-decoder/CmmUnrealDecoder/CmmUnrealDecoder.csproj -c Release -r win-x64 --self-contained true -o assets/unreal-decoder",
     "build": "npm run clean && npm run build:main && npm run build:preload && npm run build:renderer",
     "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
     "package:manual-smoke": "node scripts/createManualSmokePackage.mjs",
@@ -41,10 +44,14 @@
     "package:official-launch": "npm run package && npm run package:official-launch-mods",
     "package:coop-catchup": "node scripts/createCoopCatchupTeleportPackage.mjs",
     "package:coop-session-guard": "node scripts/createCoopSessionGuardPackage.mjs",
+    "package:coop-capacity8": "node scripts/createCoopCapacity8Package.mjs",
+    "package:player-name-repair": "node scripts/createPlayerNameRepairPackage.mjs",
+    "package:save-backup": "node scripts/createSaveBackupPackage.mjs",
+    "package:available-mods": "npm run package:npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
-    "package": "npm run build && electron-builder --dir && npm run package:manual-smoke",
-    "dist": "npm run build && electron-builder && npm run package:manual-smoke"
+    "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",
+    "dist": "npm run build && npm run build:unreal-decoder && electron-builder && npm run package:available-mods"
   },
   "cmm": {
     "status": "ux-release-hardening",
@@ -77,6 +84,14 @@
       {
         "from": "assets/runtime",
         "to": "runtime"
+      },
+      {
+        "from": "assets/unreal-decoder",
+        "to": "unreal-decoder",
+        "filter": [
+          "**/*",
+          "!*.pdb"
+        ]
       },
       {
         "from": ".codex/clawed-game-file-map/20260814-current",

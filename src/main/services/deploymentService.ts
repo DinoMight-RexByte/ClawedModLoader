@@ -4,7 +4,8 @@ import {
   mkdir,
   readFile,
   rm,
-  stat
+  stat,
+  writeFile
 } from "node:fs/promises";
 import path from "node:path";
 
@@ -18,6 +19,8 @@ import {
   DeploymentManifestSchema,
   DeploymentOperationResultSchema,
   DeploymentSnapshotSchema,
+  InstalledModManifestRecordSchema,
+  ProfileSchema,
   type DeploymentBackupRecord,
   type DeploymentDirectoryRecord,
   type DeploymentFileRecord,
@@ -50,10 +53,20 @@ import {
   collectMissingParentDirectories,
   inspectKnownRuntimeGeneratedFiles
 } from "./deploymentManifestCleanup";
+import { rmWithRetry } from "./fileRemoval";
 import type { LifecycleLogger } from "./lifecycleLogger";
 import { modProblem } from "./packageProblems";
 import { isPathInside } from "./packagePaths";
 import { atomicWriteJson } from "./profileService";
+import { validateLogicalLoadOrder } from "./loadOrderRules";
+import {
+  PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+  packagedRuntimeValidationLua
+} from "./runtimeValidationProbe";
+import {
+  UNREAL_MAPPINGS_DUMP_MOD_ID,
+  unrealMappingsDumpLua
+} from "./unrealMappingsDumpProbe";
 
 const CURRENT_MANIFEST_FILENAME = "current-deployment.json";
 
@@ -89,7 +102,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     };
   }
 
-  async getSnapshot(): Promise<DeploymentSnapshot> {
+  async getSnapshot(discovery?: GameDiscovery): Promise<DeploymentSnapshot> {
     const [manifest, activeProfile, validation, installedMods] =
       await Promise.all([
       this.readCurrentManifest(),
@@ -97,25 +110,40 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       this.loadOrderService.validateActiveOrder(),
       this.modLibraryService.listInstalledModManifests()
     ]);
+    const fingerprintDiscovery = snapshotDiscovery(discovery, manifest);
+    const fingerprint = fingerprintDiscovery
+      ? await this.gameAdapter.getFingerprint(
+          fingerprintDiscovery,
+          manifest?.gameFingerprint as Partial<GameFingerprint> | null,
+          { mode: "quick" }
+        )
+      : null;
+    const runtimeScope = manifest
+      ? runtimeScopeFromManifest(manifest)
+      : {
+          steamBuildId: fingerprint?.steamBuildId ?? null,
+          fingerprintSha256: fingerprint?.fingerprintSha256 ?? null
+        };
     const runtime = await this.runtimeManager.getRuntimeSnapshot(
-      manifest?.gameFingerprint.steamBuildId ?? null
+      runtimeScope.steamBuildId,
+      runtimeScope.fingerprintSha256
     );
     const problems: ModProblem[] = [];
 
     if (manifest) {
       const requiresRuntime = manifestRequiresRuntime(manifest);
+      const runtimeValidationManifest = isRuntimeValidationManifest(manifest);
       if (requiresRuntime) {
-        problems.push(...runtime.problems);
+        problems.push(
+          ...(runtimeValidationManifest
+            ? runtime.problems.filter((problem) => problem.severity !== "error")
+            : runtime.problems)
+        );
       }
       const verifyProblems = await this.verifyManifestFiles(manifest);
       problems.push(...verifyProblems);
       problems.push(...runtimeConfigurationMessages(manifest));
-      const fingerprint = await this.gameAdapter.getFingerprint(
-        discoveryFromManifest(manifest),
-        manifest.gameFingerprint as Partial<GameFingerprint>,
-        { mode: "quick" }
-      );
-      problems.push(...fingerprint.problems);
+      problems.push(...(fingerprint?.problems ?? []));
       const hasVerificationError = verifyProblems.some(
         (problem) => problem.severity === "error"
       );
@@ -123,8 +151,10 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         manifest.profileId === activeProfile.id && validation.validity === "valid";
       const state: DeploymentSnapshot["state"] = hasVerificationError
         ? "deploymentError"
-        : fingerprint.status === "NEW_CHANGED_BUILD"
+        : fingerprint?.status === "NEW_CHANGED_BUILD"
           ? "runtimeIncompatible"
+          : runtimeValidationManifest
+            ? "runtimeUnvalidated"
           : requiresRuntime &&
               runtimeBlocksDeployment(runtime.status)
           ? "runtimeIncompatible"
@@ -231,9 +261,18 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     }
 
     const activeManifest = await this.readCurrentManifest();
+    const runtimeReference = activeManifest
+      ? runtimeReferenceFromManifest(activeManifest)
+      : null;
+    if (activeManifest) {
+      const vanillaResult = await this.prepareVanillaDeployment(discovery);
+      if (vanillaResult.status !== "ok") {
+        return blockedResult("deploymentError", vanillaResult.problems);
+      }
+    }
     const currentFingerprint = await this.gameAdapter.getFingerprint(
       discovery,
-      activeManifest?.gameFingerprint as Partial<GameFingerprint> | null,
+      runtimeReference,
       { mode: "quick" }
     );
     const buildRefreshProblems =
@@ -241,7 +280,8 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         ? currentFingerprint.problems
         : [];
     let runtime = await this.runtimeManager.getRuntimeSnapshot(
-      currentFingerprint.steamBuildId
+      currentFingerprint.steamBuildId,
+      currentFingerprint.fingerprintSha256
     );
 
     if (
@@ -253,7 +293,8 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     ) {
       await this.runtimeManager.ensureBundledUe4ssRuntime();
       runtime = await this.runtimeManager.getRuntimeSnapshot(
-        currentFingerprint.steamBuildId
+        currentFingerprint.steamBuildId,
+        currentFingerprint.fingerprintSha256
       );
     }
 
@@ -267,6 +308,10 @@ export class LocalDeploymentService implements DeploymentServiceContract {
           ? [autoRuntimeUpdateDisabledProblem()]
           : [])
       ]);
+    }
+
+    if (plan.requiresRuntime && runtime.status === "unvalidated") {
+      return blockedResult("runtimeUnvalidated", runtime.problems);
     }
 
     const transactionId = randomUUID();
@@ -442,6 +487,314 @@ export class LocalDeploymentService implements DeploymentServiceContract {
           )
         ]
       });
+    }
+  }
+
+  async prepareRuntimeValidationDeployment(
+    discovery: GameDiscovery
+  ): Promise<DeploymentOperationResult> {
+    if (!discovery.gameInstallPath) {
+      return blockedResult("runtimeIncompatible", [
+        modProblem(
+          "error",
+          "GAME_INSTALL_MISSING",
+          "Clawed must be detected before CMM can validate the packaged runtime."
+        )
+      ]);
+    }
+
+    const ue4ssAdapter = this.adapters.find((adapter) => adapter.id === "ue4ss");
+    if (!ue4ssAdapter) {
+      return blockedResult("deploymentError", [
+        modProblem(
+          "error",
+          "DEPLOYMENT_ADAPTER_MISSING",
+          "No UE4SS deployment adapter is available for packaged runtime validation."
+        )
+      ]);
+    }
+
+    const vanillaResult = await this.prepareVanillaDeployment(discovery);
+    if (vanillaResult.status !== "ok") {
+      return blockedResult("deploymentError", vanillaResult.problems);
+    }
+
+    const currentFingerprint = await this.gameAdapter.getFingerprint(
+      discovery,
+      null,
+      { mode: "quick" }
+    );
+    const runtime = await this.runtimeManager.getRuntimeSnapshot(
+      currentFingerprint.steamBuildId,
+      currentFingerprint.fingerprintSha256
+    );
+
+    if (!runtime.ue4ss || runtime.ue4ss.source !== "bundled") {
+      return blockedResult("runtimeIncompatible", [
+        modProblem(
+          "error",
+          "UE4SS_PACKAGED_RUNTIME_REQUIRED",
+          "Automatic validation only runs for the packaged UE4SS runtime."
+        )
+      ]);
+    }
+
+    if (runtime.status !== "unvalidated" && runtime.status !== "incompatible") {
+      return blockedResult(
+        "deploymentError",
+        runtime.problems.length
+          ? runtime.problems
+          : [
+              modProblem(
+                "warning",
+                "UE4SS_RUNTIME_VALIDATION_NOT_REQUIRED",
+                "The packaged UE4SS runtime is not in an unvalidated state."
+              )
+            ]
+      );
+    }
+    const validationRuntime =
+      runtime.status === "incompatible"
+        ? {
+            ...runtime,
+            status: "unvalidated" as const,
+            ue4ss: {
+              ...runtime.ue4ss,
+              releaseValidation: "UNVALIDATED" as const
+            },
+            problems: runtime.problems.filter(
+              (problem) => problem.severity !== "error"
+            )
+          }
+        : runtime;
+
+    const transactionId = randomUUID();
+    const layout = await this.storageService.getLayout();
+    const stagingPath = path.join(
+      layout.directories.staging,
+      `runtime-validation-${transactionId}`
+    );
+
+    try {
+      await mkdir(stagingPath, { recursive: true });
+      const validationRecord = await createRuntimeValidationRecord(stagingPath);
+      const validationProfile = createRuntimeValidationProfile(
+        validationRecord.manifest.version
+      );
+      const loadOrder = validateLogicalLoadOrder(validationProfile, [
+        validationRecord
+      ]);
+      const gameLayout = this.gameAdapter.getLayout(discovery);
+      const context = {
+        transactionId,
+        profile: validationProfile,
+        installedMods: [validationRecord],
+        loadOrder,
+        gameInstallPath: discovery.gameInstallPath,
+        gameExecutable: discovery.gameExecutable,
+        gameFingerprint: currentFingerprint,
+        runtimeTargetRelativePath: relativeTargetPath(
+          discovery.gameInstallPath,
+          gameLayout.runtimePath
+        ),
+        unrealPakTargetRelativePath: relativeTargetPath(
+          discovery.gameInstallPath,
+          gameLayout.pakDirectory
+        ),
+        stagingPath,
+        runtime: validationRuntime
+      };
+      const validation = await ue4ssAdapter.validateEnvironment(context);
+      if (!validation.ok) {
+        return blockedResult(
+          "deploymentError",
+          validation.messages.map((message) =>
+            modProblem("error", "DEPLOYMENT_VALIDATION_FAILED", message)
+          )
+        );
+      }
+
+      const staged = await this.stageWithAdapters([ue4ssAdapter], context);
+      const manifest = await this.applyStagedDeployment({
+        staged,
+        discovery,
+        transactionId
+      });
+
+      return DeploymentOperationResultSchema.parse({
+        status: "ok",
+        state: "runtimeUnvalidated",
+        manifest,
+        problems: [
+          ...runtime.problems.filter((problem) => problem.severity !== "error"),
+          ...validation.messages.map((message) =>
+            modProblem("warning", "DEPLOYMENT_ADAPTER_MESSAGE", message)
+          )
+        ]
+      });
+    } catch (error) {
+      const rollback = await this.rollbackActiveTransaction(transactionId);
+      return DeploymentOperationResultSchema.parse({
+        status: rollback ? "rolledBack" : "failed",
+        state: "deploymentError",
+        manifest: null,
+        problems: [
+          modProblem(
+            "error",
+            "RUNTIME_VALIDATION_DEPLOYMENT_FAILED",
+            "CMM could not stage packaged runtime validation.",
+            error instanceof Error ? error.message : String(error)
+          )
+        ]
+      });
+    } finally {
+      await rm(stagingPath, { recursive: true, force: true }).catch(
+        () => undefined
+      );
+    }
+  }
+
+  async prepareUnrealMappingsDumpDeployment(
+    discovery: GameDiscovery
+  ): Promise<DeploymentOperationResult> {
+    if (!discovery.gameInstallPath) {
+      return blockedResult("runtimeIncompatible", [
+        modProblem(
+          "error",
+          "GAME_INSTALL_MISSING",
+          "Clawed must be detected before CMM can generate Unreal mappings."
+        )
+      ]);
+    }
+
+    const ue4ssAdapter = this.adapters.find((adapter) => adapter.id === "ue4ss");
+    if (!ue4ssAdapter) {
+      return blockedResult("deploymentError", [
+        modProblem(
+          "error",
+          "DEPLOYMENT_ADAPTER_MISSING",
+          "No UE4SS deployment adapter is available for Unreal mappings generation."
+        )
+      ]);
+    }
+
+    const currentFingerprint = await this.gameAdapter.getFingerprint(
+      discovery,
+      null,
+      { mode: "quick" }
+    );
+    let runtime = await this.runtimeManager.getRuntimeSnapshot(
+      currentFingerprint.steamBuildId,
+      currentFingerprint.fingerprintSha256
+    );
+
+    if (
+      !runtime.ue4ss ||
+      runtime.ue4ss.source !== "bundled" ||
+      runtimeBlocksDeployment(runtime.status)
+    ) {
+      await this.runtimeManager.ensureBundledUe4ssRuntime();
+      runtime = await this.runtimeManager.getRuntimeSnapshot(
+        currentFingerprint.steamBuildId,
+        currentFingerprint.fingerprintSha256
+      );
+    }
+
+    if (!runtime.ue4ss || runtime.ue4ss.source !== "bundled") {
+      return blockedResult("runtimeIncompatible", [
+        modProblem(
+          "error",
+          "UE4SS_PACKAGED_RUNTIME_REQUIRED",
+          "Unreal mappings generation requires the packaged UE4SS runtime."
+        )
+      ]);
+    }
+
+    if (runtimeBlocksDeployment(runtime.status)) {
+      return blockedResult("runtimeIncompatible", runtime.problems);
+    }
+
+    const transactionId = randomUUID();
+    const layout = await this.storageService.getLayout();
+    const stagingPath = path.join(
+      layout.directories.staging,
+      `unreal-mappings-${transactionId}`
+    );
+
+    try {
+      await mkdir(stagingPath, { recursive: true });
+      const dumpRecord = await createUnrealMappingsDumpRecord(stagingPath);
+      const dumpProfile = createUnrealMappingsDumpProfile(
+        dumpRecord.manifest.version
+      );
+      const loadOrder = validateLogicalLoadOrder(dumpProfile, [dumpRecord]);
+      const gameLayout = this.gameAdapter.getLayout(discovery);
+      const context = {
+        transactionId,
+        profile: dumpProfile,
+        installedMods: [dumpRecord],
+        loadOrder,
+        gameInstallPath: discovery.gameInstallPath,
+        gameExecutable: discovery.gameExecutable,
+        gameFingerprint: currentFingerprint,
+        runtimeTargetRelativePath: relativeTargetPath(
+          discovery.gameInstallPath,
+          gameLayout.runtimePath
+        ),
+        unrealPakTargetRelativePath: relativeTargetPath(
+          discovery.gameInstallPath,
+          gameLayout.pakDirectory
+        ),
+        stagingPath,
+        runtime
+      };
+      const validation = await ue4ssAdapter.validateEnvironment(context);
+      if (!validation.ok) {
+        return blockedResult(
+          "deploymentError",
+          validation.messages.map((message) =>
+            modProblem("error", "DEPLOYMENT_VALIDATION_FAILED", message)
+          )
+        );
+      }
+
+      const staged = await this.stageWithAdapters([ue4ssAdapter], context);
+      const manifest = await this.applyStagedDeployment({
+        staged,
+        discovery,
+        transactionId
+      });
+
+      return DeploymentOperationResultSchema.parse({
+        status: "ok",
+        state: "runtimeUnvalidated",
+        manifest,
+        problems: [
+          ...runtime.problems.filter((problem) => problem.severity !== "error"),
+          ...validation.messages.map((message) =>
+            modProblem("warning", "DEPLOYMENT_ADAPTER_MESSAGE", message)
+          )
+        ]
+      });
+    } catch (error) {
+      const rollback = await this.rollbackActiveTransaction(transactionId);
+      return DeploymentOperationResultSchema.parse({
+        status: rollback ? "rolledBack" : "failed",
+        state: "deploymentError",
+        manifest: null,
+        problems: [
+          modProblem(
+            "error",
+            "UNREAL_MAPPINGS_DEPLOYMENT_FAILED",
+            "CMM could not stage Unreal mappings generation.",
+            error instanceof Error ? error.message : String(error)
+          )
+        ]
+      });
+    } finally {
+      await rm(stagingPath, { recursive: true, force: true }).catch(
+        () => undefined
+      );
     }
   }
 
@@ -651,7 +1004,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         throw new Error(`CMM-owned file changed after deployment: ${file.relativePath}`);
       }
 
-      await rm(file.absolutePath, { force: true });
+      await rmWithRetry(file.absolutePath, { force: true });
     }
 
     const backups = [...manifest.backups].reverse();
@@ -950,6 +1303,168 @@ function getEnabledInstalledRecords(
   });
 }
 
+async function createRuntimeValidationRecord(
+  stagingPath: string
+): Promise<InstalledModManifestRecord> {
+  const now = new Date().toISOString();
+  const packageRoot = path.join(stagingPath, "runtime-validation-package");
+  const packagePath = path.join(
+    packageRoot,
+    `${PACKAGED_RUNTIME_VALIDATION_MOD_ID}.clawedmod`
+  );
+  const payloadPath = path.join(
+    packageRoot,
+    "payload",
+    "Mods",
+    PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+    "Scripts",
+    "main.lua"
+  );
+  await mkdir(path.dirname(payloadPath), { recursive: true });
+  await writeFile(payloadPath, packagedRuntimeValidationLua());
+  await writeFile(packagePath, "internal packaged runtime validation package\n");
+
+  const manifest = {
+    schemaVersion: 1 as const,
+    id: PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+    name: "CMM Packaged Runtime Validation",
+    version: timestampForVersion(now),
+    author: "Clawed Mod Manager",
+    description: "Temporary read-only marker for packaged UE4SS validation.",
+    game: "clawed" as const,
+    loader: "ue4ss" as const,
+    dependencies: [],
+    conflicts: [],
+    loadAfter: [],
+    loadBefore: []
+  };
+
+  return InstalledModManifestRecordSchema.parse({
+    mod: {
+      id: manifest.id,
+      version: manifest.version,
+      name: manifest.name,
+      author: manifest.author,
+      description: manifest.description,
+      loader: manifest.loader,
+      sha256: await hashFileSha256(packagePath),
+      enabled: true,
+      installPath: packageRoot,
+      packagePath,
+      iconDataUrl: null,
+      hasReadme: false,
+      status: "ready",
+      problems: [],
+      installedAt: now
+    },
+    manifest
+  });
+}
+
+function createRuntimeValidationProfile(version: string) {
+  const now = new Date().toISOString();
+  return ProfileSchema.parse({
+    schemaVersion: 1,
+    id: "cmm-runtime-validation",
+    name: "CMM Runtime Validation",
+    createdAt: now,
+    updatedAt: now,
+    selectedMods: {
+      [PACKAGED_RUNTIME_VALIDATION_MOD_ID]: {
+        modId: PACKAGED_RUNTIME_VALIDATION_MOD_ID,
+        version,
+        enabled: true,
+        config: {}
+      }
+    },
+    orderedModIds: [PACKAGED_RUNTIME_VALIDATION_MOD_ID],
+    preferredLaunchMode: "MODDED"
+  });
+}
+
+async function createUnrealMappingsDumpRecord(
+  stagingPath: string
+): Promise<InstalledModManifestRecord> {
+  const now = new Date().toISOString();
+  const packageRoot = path.join(stagingPath, "unreal-mappings-package");
+  const packagePath = path.join(
+    packageRoot,
+    `${UNREAL_MAPPINGS_DUMP_MOD_ID}.clawedmod`
+  );
+  const payloadPath = path.join(
+    packageRoot,
+    "payload",
+    "Mods",
+    UNREAL_MAPPINGS_DUMP_MOD_ID,
+    "Scripts",
+    "main.lua"
+  );
+  await mkdir(path.dirname(payloadPath), { recursive: true });
+  await writeFile(payloadPath, unrealMappingsDumpLua());
+  await writeFile(packagePath, "internal Unreal mappings dump package\n");
+
+  const manifest = {
+    schemaVersion: 1 as const,
+    id: UNREAL_MAPPINGS_DUMP_MOD_ID,
+    name: "CMM Unreal Mappings Dump",
+    version: timestampForVersion(now),
+    author: "Clawed Mod Manager",
+    description: "Temporary UE4SS task that asks Clawed to generate Mappings.usmap.",
+    game: "clawed" as const,
+    loader: "ue4ss" as const,
+    dependencies: [],
+    conflicts: [],
+    loadAfter: [],
+    loadBefore: []
+  };
+
+  return InstalledModManifestRecordSchema.parse({
+    mod: {
+      id: manifest.id,
+      version: manifest.version,
+      name: manifest.name,
+      author: manifest.author,
+      description: manifest.description,
+      loader: manifest.loader,
+      sha256: await hashFileSha256(packagePath),
+      enabled: true,
+      installPath: packageRoot,
+      packagePath,
+      iconDataUrl: null,
+      hasReadme: false,
+      status: "ready",
+      problems: [],
+      installedAt: now
+    },
+    manifest
+  });
+}
+
+function createUnrealMappingsDumpProfile(version: string) {
+  const now = new Date().toISOString();
+  return ProfileSchema.parse({
+    schemaVersion: 1,
+    id: "cmm-unreal-mappings-dump",
+    name: "CMM Unreal Mappings Dump",
+    createdAt: now,
+    updatedAt: now,
+    selectedMods: {
+      [UNREAL_MAPPINGS_DUMP_MOD_ID]: {
+        modId: UNREAL_MAPPINGS_DUMP_MOD_ID,
+        version,
+        enabled: true,
+        config: {}
+      }
+    },
+    orderedModIds: [UNREAL_MAPPINGS_DUMP_MOD_ID],
+    preferredLaunchMode: "MODDED"
+  });
+}
+
+function timestampForVersion(timestamp: string): string {
+  return timestamp.replace(/[-:.TZ]/g, "").slice(0, 14);
+}
+
 function mergePlannedFiles(
   stagedDeployments: StagedDeployment[]
 ): PlannedDeploymentFile[] {
@@ -1013,6 +1528,73 @@ function discoveryFromManifest(manifest: DeploymentManifest): GameDiscovery {
   };
 }
 
+function snapshotDiscovery(
+  discovery: GameDiscovery | undefined,
+  manifest: DeploymentManifest | null
+): GameDiscovery | null {
+  if (discovery?.discoveryStatus === "READY") {
+    return discovery;
+  }
+
+  return manifest ? discoveryFromManifest(manifest) : null;
+}
+
+function runtimeScopeFromManifest(manifest: DeploymentManifest): {
+  steamBuildId: string | null;
+  fingerprintSha256: string | null;
+} {
+  if (isRuntimeValidationManifest(manifest)) {
+    return {
+      steamBuildId: manifest.gameFingerprint.steamBuildId ?? null,
+      fingerprintSha256: manifest.gameFingerprint.fingerprintSha256 ?? null
+    };
+  }
+
+  return {
+    steamBuildId:
+      configurationString(manifest.runtimeConfiguration, "targetSteamBuildId") ??
+      manifest.gameFingerprint.steamBuildId ??
+      null,
+    fingerprintSha256:
+      configurationString(manifest.runtimeConfiguration, "targetFingerprint") ??
+      manifest.gameFingerprint.fingerprintSha256 ??
+      null
+  };
+}
+
+function runtimeReferenceFromManifest(
+  manifest: DeploymentManifest
+): Partial<GameFingerprint> {
+  const scope = runtimeScopeFromManifest(manifest);
+  return {
+    ...scope,
+    fingerprintMode: manifest.gameFingerprint.fingerprintMode ?? "quick"
+  };
+}
+
+function configurationString(
+  configuration: Record<string, unknown>,
+  key: string
+): string | null {
+  const value = configuration[key];
+  if (typeof value === "string" && value.trim().length > 0) {
+    return value;
+  }
+
+  if (
+    configuration.type === "composite" &&
+    typeof configuration.adapters === "object" &&
+    configuration.adapters !== null
+  ) {
+    const ue4ss = (configuration.adapters as Record<string, unknown>).ue4ss;
+    if (typeof ue4ss === "object" && ue4ss !== null) {
+      return configurationString(ue4ss as Record<string, unknown>, key);
+    }
+  }
+
+  return null;
+}
+
 function manifestRequiresRuntime(manifest: DeploymentManifest): boolean {
   const configuration = manifest.runtimeConfiguration;
   if (configuration.type === "ue4ss") {
@@ -1031,6 +1613,17 @@ function manifestRequiresRuntime(manifest: DeploymentManifest): boolean {
   }
 
   return false;
+}
+
+function isRuntimeValidationManifest(manifest: DeploymentManifest): boolean {
+  const configuration = manifest.runtimeConfiguration;
+  return (
+    manifest.profileId === "cmm-runtime-validation" &&
+    configuration.type === "ue4ss" &&
+    Array.isArray(configuration.logicalOrder) &&
+    configuration.logicalOrder.length === 1 &&
+    configuration.logicalOrder[0] === PACKAGED_RUNTIME_VALIDATION_MOD_ID
+  );
 }
 
 function runtimeBlocksDeployment(status: RuntimeStatus): boolean {
@@ -1053,7 +1646,8 @@ function autoRuntimeUpdateDisabledProblem(): ModProblem {
 function defaultDeploymentSettings(): AppSettings {
   return {
     manualGameDirectory: null,
-    autoUpdatePackagedRuntime: true
+    autoUpdatePackagedRuntime: true,
+    autoValidatePackagedRuntime: false
   };
 }
 

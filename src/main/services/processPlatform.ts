@@ -17,7 +17,10 @@ export interface ProcessPlatform {
   listProcesses(): Promise<GameProcessInfo[]>;
   findProcessByExecutable(gameExecutable: string): Promise<GameProcessInfo | null>;
   isProcessRunning(processId: number): Promise<boolean>;
-  requestGracefulClose(processId: number): Promise<boolean>;
+  requestGracefulClose(
+    processId: number,
+    options?: { timeoutMs?: number }
+  ): Promise<boolean>;
   forceTerminate(processId: number): Promise<boolean>;
   launchSteamApp(appId: string): Promise<void>;
 }
@@ -120,7 +123,10 @@ Get-CimInstance Win32_Process |
       .filter((processInfo): processInfo is GameProcessInfo => processInfo !== null);
   }
 
-  async requestGracefulClose(processId: number): Promise<boolean> {
+  async requestGracefulClose(
+    processId: number,
+    options?: { timeoutMs?: number }
+  ): Promise<boolean> {
     if (process.platform !== "win32") {
       return false;
     }
@@ -162,7 +168,7 @@ $closed
     const { stdout } = await execFileAsync(
       "powershell.exe",
       ["-NoProfile", "-Command", script],
-      { windowsHide: true }
+      { timeout: options?.timeoutMs, windowsHide: true }
     );
 
     return Number.parseInt(stdout.trim(), 10) > 0;

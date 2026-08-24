@@ -8,11 +8,12 @@ import {
   CreatorAssetMetadataV1Schema,
   CreatorAssetTreeRequestSchema,
   CreatorAssetTreeResultSchema,
-  CreatorModelPreviewResultSchema,
-  CreatorMeshExportResultSchema,
   CreatorAssetReportResultSchema,
   CreatorAssetSearchRequestSchema,
   CreatorExportPlanResultSchema,
+  CreatorMeshExportResultSchema,
+  CreatorMeshPackageExportResultSchema,
+  CreatorModelPreviewResultSchema,
   type CreatorAssetIndexEntry
 } from "../../src/shared/contracts/app";
 import {
@@ -123,6 +124,35 @@ describe("creator asset contracts", () => {
     const manifest = ClawedModManifestV1Schema.parse(createFixtureManifest());
 
     expect(manifest.creatorAssets).toBeUndefined();
+  });
+
+  it("accepts packageIdentity as an optional hidden package identifier", () => {
+    const manifest = ClawedModManifestV1Schema.parse(
+      createFixtureManifest({
+        id: "rename-proof",
+        packageIdentity: {
+          schemaVersion: 1,
+          id: "cmm:generated:rename-proof",
+          source: "cmmGenerated"
+        }
+      })
+    );
+
+    expect(manifest.packageIdentity).toMatchObject({
+      id: "cmm:generated:rename-proof",
+      source: "cmmGenerated"
+    });
+    expect(() =>
+      ClawedModManifestV1Schema.parse(
+        createFixtureManifest({
+          packageIdentity: {
+            schemaVersion: 1,
+            id: "bad identity with spaces",
+            source: "cmmGenerated"
+          }
+        })
+      )
+    ).toThrow();
   });
 
   it("accepts creatorAssets as an optional .clawedmod manifest extension", () => {
@@ -400,7 +430,8 @@ describe("creator asset contracts", () => {
           packageName: "Female Character A",
           validationState: "validated",
           conflictState: "winner",
-          exportState: "exportable"
+          exportState: "exportable",
+          viewportState: "viewable"
         }
       ],
       totalChildren: 2,
@@ -411,6 +442,7 @@ describe("creator asset contracts", () => {
     expect(request.limit).toBe(200);
     expect(result.nodes[0].kind).toBe("root");
     expect(result.nodes[1].assetClass).toBe("Texture2D");
+    expect(result.nodes[1].viewportState).toBe("viewable");
   });
 
   it("defaults expanded conflict graph resolver metadata", () => {
@@ -532,6 +564,22 @@ describe("creator asset contracts", () => {
         }
       }).model?.source
     ).toBe("decodedBaseGame");
+    expect(
+      CreatorModelPreviewResultSchema.parse({
+        ...parsed,
+        metadata: {
+          ...parsed.metadata,
+          meshType: "skeleton"
+        },
+        model: {
+          dataUrl: "data:text/plain;base64,diAwIDAgMA==",
+          format: "obj",
+          source: "packagePayload",
+          fileName: "direct.obj",
+          sizeBytes: 8
+        }
+      }).model?.source
+    ).toBe("packagePayload");
   });
 
   it("validates creator mesh export responses", () => {
@@ -559,6 +607,43 @@ describe("creator asset contracts", () => {
 
     expect(parsed.format).toBe("obj");
     expect(parsed.metadata.previewSource).toBeNull();
+  });
+
+  it("validates creator mesh package export responses", () => {
+    const asset = creatorBrowserEntries()[0];
+    const parsed = CreatorMeshPackageExportResultSchema.parse({
+      status: "exported",
+      destinationPath: "C:\\Exports\\visible.clawedmod",
+      bytesWritten: 512,
+      itemCount: 1,
+      exportedCount: 1,
+      items: [
+        {
+          asset,
+          status: "exported",
+          format: "obj",
+          payloadPath: "payload/creator-exports/01-visible.obj",
+          bytesWritten: 128,
+          metadata: {
+            meshType: "skeleton",
+            skeleton: asset.objectPath,
+            physicsAsset: null,
+            materialSlots: [],
+            lods: [],
+            dependencyPaths: [],
+            targetObjectPath: asset.objectPath,
+            packageSource: "Clawed base game",
+            validationState: null,
+            conflictWinner: null,
+            exportState: "exportable"
+          },
+          problems: []
+        }
+      ],
+      problems: []
+    });
+
+    expect(parsed.items[0]?.metadata.meshType).toBe("skeleton");
   });
 });
 

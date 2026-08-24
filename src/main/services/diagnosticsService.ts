@@ -57,7 +57,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     const [modLibrary, validation, deployment] = await Promise.all([
       this.dependencies.profileService.listInstalledModsForActiveProfile(),
       this.dependencies.loadOrderService.validateActiveOrder(),
-      this.dependencies.deploymentService.getSnapshot()
+      this.dependencies.deploymentService.getSnapshot(discovery)
     ]);
     const errorCount = validation.problems.filter(
       (problem) => problem.severity === "ERROR"
@@ -79,6 +79,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       enabledMods: modLibrary.totals.enabled,
       profileValidity: validation.validity,
       deploymentState: deployment.state,
+      runtime: deployment.runtime,
       conflicts: {
         count: errorCount + warningCount,
         severity:
@@ -105,7 +106,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     ] = await Promise.all([
       this.dependencies.profileService.listInstalledModsForActiveProfile(),
       this.dependencies.loadOrderService.validateActiveOrder(),
-      this.dependencies.deploymentService.getSnapshot(),
+      this.dependencies.deploymentService.getSnapshot(discovery),
       this.getLogsSummary(),
       this.dependencies.assetRegistryService.getSnapshot().catch(() => null)
     ]);
@@ -114,14 +115,12 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       deployment.activeManifest?.gameFingerprint ?? null,
       { mode: "quick" }
     );
-    const runtime = await this.dependencies.runtimeManager.getRuntimeSnapshot(
-      gameFingerprint.steamBuildId
-    );
     const services = [
       this.dependencies.gameLocator.getStatus(),
       this.dependencies.processSupervisor.getStatus(),
       this.dependencies.launchService.getStatus(),
       this.dependencies.deploymentService.getStatus(),
+      this.dependencies.packagedRuntimeValidationService.getStatus(),
       this.dependencies.runtimeManager.getStatus(),
       this.dependencies.modLibraryService.getStatus(),
       this.dependencies.externalImportService.getStatus(),
@@ -146,7 +145,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       discovery,
       process,
       gameFingerprint,
-      runtime,
+      runtime: deployment.runtime,
       activeProfile: {
         id: activeProfile.id,
         name: activeProfile.name
@@ -364,6 +363,13 @@ function formatDiagnosticReport(summary: DiagnosticsSummary): string {
         : summary.runtime.ue4ss
           ? "user"
           : "none"
+    }`,
+    `Runtime validation: ${summary.runtime.ue4ss?.releaseValidation ?? "none"}`,
+    `Runtime validated build: ${
+      summary.runtime.ue4ss?.validation?.steamBuildId ?? "none"
+    }`,
+    `Runtime validation evidence: ${
+      summary.runtime.ue4ss?.validation?.evidencePath ?? "none"
     }`,
     `Active profile: ${summary.activeProfile.name}`,
     `Profile validity: ${summary.profileValidity}`,

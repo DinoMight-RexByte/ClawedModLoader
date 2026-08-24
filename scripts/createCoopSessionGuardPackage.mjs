@@ -6,15 +6,16 @@ import JSZip from "jszip";
 import {
   currentClawedSteamBuildId,
   generatedCreatorSupportMetadata,
+  generatedPackageIdentity,
   generatedSupportedSteamBuilds
 } from "./clawedBuildMetadata.mjs";
 
-const modId = "ClawedCoopSessionGuard";
-const modName = "Clawed Co-op Session Coordinator";
-const version = "0.2.0-prototype.20260817";
+const modId = "CoopSessionGuard";
+const modName = "Co-op Session Guard";
+const version = "0.2.2-prototype.20260824";
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
-  "Built against current package metadata and packaged config; no two-client join validation has been performed.";
+  "Host/client diagnostic hardening generated against current package metadata; no multi-client supported-party-size validation has been performed.";
 const releaseRoot = path.resolve("release");
 const outputRoot = path.resolve(
   process.env.CMM_COOP_SESSION_GUARD_OUTPUT_DIR ??
@@ -22,8 +23,8 @@ const outputRoot = path.resolve(
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
 const lua = String.raw`local ok_helpers, UEHelpers = pcall(require, "UEHelpers")
-local marker = "[ClawedCoopSessionGuard] "
-local version = "0.2.0-prototype.20260817"
+local marker = "[CoopSessionGuard] "
+local version = "0.2.2-prototype.20260824"
 local max_recent_events = 140
 local join_timeout_ms = 26000
 local invite_join_wait_ms = 1800
@@ -42,7 +43,8 @@ local coordinator = {
     last_search_result = nil,
     last_game_instance = nil,
     last_failure = nil,
-    last_host_args = nil
+    last_host_args = nil,
+    last_find_args = nil
 }
 local unpack_fn = table.unpack or unpack
 
@@ -73,8 +75,8 @@ end
 
 local function write_failure(line)
     local targets = {
-        "ue4ss/Mods/ClawedCoopSessionGuard/session-failures.log",
-        "Mods/ClawedCoopSessionGuard/session-failures.log"
+        "ue4ss/Mods/CoopSessionGuard/session-failures.log",
+        "Mods/CoopSessionGuard/session-failures.log"
     }
     for _, target in ipairs(targets) do
         local ok, result = pcall(function() return write_line(target, line) end)
@@ -166,6 +168,23 @@ local function get_world()
     return find_first("World")
 end
 
+local function value_text(value)
+    value = unwrap(value)
+    if value == nil then return nil end
+    local value_type = type(value)
+    if value_type == "string" or value_type == "number" or value_type == "boolean" then return tostring(value) end
+    local ok, text_value = pcall(function() return value:ToString() end)
+    if ok and text_value ~= nil then return tostring(text_value) end
+    return full_name(value)
+end
+
+local function net_mode_label()
+    local world = get_world()
+    local ok, mode = call_method(world, "GetNetMode")
+    if ok then return value_text(mode) or tostring(mode) end
+    return "unknown"
+end
+
 local function get_game_instance()
     if ok_helpers and UEHelpers.GetGameInstance ~= nil then
         local ok, instance = pcall(function() return UEHelpers.GetGameInstance() end)
@@ -218,6 +237,37 @@ local function pawn_count()
     return count
 end
 
+local function player_state_count()
+    local seen = {}
+    local count = 0
+    local world = get_world()
+    local game_state = get_prop(world, "GameState") or find_first("GameStateBase")
+    local player_array = get_prop(game_state, "PlayerArray")
+    if player_array ~= nil then
+        for _, state in pairs(player_array) do
+            if is_valid(state) then
+                local key = full_name(state)
+                if seen[key] ~= true then
+                    seen[key] = true
+                    count = count + 1
+                end
+            end
+        end
+    end
+    for _, class_name_value in ipairs({ "PlayerState_FDG_C", "PlayerState" }) do
+        for _, state in pairs(find_all(class_name_value)) do
+            if is_valid(state) then
+                local key = full_name(state)
+                if seen[key] ~= true then
+                    seen[key] = true
+                    count = count + 1
+                end
+            end
+        end
+    end
+    return count
+end
+
 local function compact_args(args)
     local parts = {}
     for i = 1, math.min(#args, 8) do
@@ -259,10 +309,16 @@ local function state_line()
         "|intent=" .. tostring(coordinator.intent) ..
         "|lock_reason=" .. tostring(coordinator.lock_reason) ..
         "|world=" .. world_label() ..
+        "|net_mode=" .. net_mode_label() ..
         "|menu_world=" .. tostring(is_menu_world()) ..
         "|controllers=" .. tostring(controller_count()) ..
         "|pawns=" .. tostring(pawn_count()) ..
+        "|player_states=" .. tostring(player_state_count()) ..
         "|gi=" .. full_name(get_game_instance())
+end
+
+local function session_environment(source)
+    log("session_environment", tostring(source) .. "|" .. state_line())
 end
 
 local function transition(next_state, reason)
@@ -275,6 +331,7 @@ end
 local function snapshot(source)
     local ok, err = pcall(function()
         local instance = get_game_instance()
+        session_environment(source)
         log("snapshot", tostring(source) .. "|" .. state_line() .. "|gi_class=" .. class_name(instance))
         for _, widget_class in ipairs({ "WBP_HostMultiplayer_C", "WBP_ServerBrowser_C", "WBP_ServerSlotBase_C" }) do
             local count = 0
@@ -433,8 +490,13 @@ local function guarded_find(reason)
         reset_later("find_no_instance")
         return false
     end
-    local ok, result_value = call_method(instance, "Find Friends Sessions")
-    log("guarded_call", "Find Friends Sessions|reason=" .. tostring(reason) .. "|ok=" .. tostring(ok) .. "|result=" .. tostring(result_value))
+    local ok, result_value
+    if coordinator.last_find_args ~= nil then
+        ok, result_value = call_method(instance, "Find Friends Sessions", unpack_fn(coordinator.last_find_args))
+    else
+        ok, result_value = call_method(instance, "Find Friends Sessions")
+    end
+    log("guarded_call", "Find Friends Sessions|reason=" .. tostring(reason) .. "|args=" .. compact_args(coordinator.last_find_args or {}) .. "|ok=" .. tostring(ok) .. "|result=" .. tostring(result_value))
     if ok then
         transition("find_dispatched", reason)
         local generation = coordinator.generation
@@ -462,8 +524,13 @@ local function guarded_host(reason)
         reset_later("host_no_instance")
         return false
     end
-    local ok, result_value = call_method(instance, "Create  Friends Session")
-    log("guarded_call", "Create  Friends Session|reason=" .. tostring(reason) .. "|ok=" .. tostring(ok) .. "|result=" .. tostring(result_value))
+    local ok, result_value
+    if coordinator.last_host_args ~= nil then
+        ok, result_value = call_method(instance, "Create  Friends Session", unpack_fn(coordinator.last_host_args))
+    else
+        ok, result_value = call_method(instance, "Create  Friends Session")
+    end
+    log("guarded_call", "Create  Friends Session|reason=" .. tostring(reason) .. "|args=" .. compact_args(coordinator.last_host_args or {}) .. "|ok=" .. tostring(ok) .. "|result=" .. tostring(result_value))
     if ok then
         transition("host_dispatched", reason)
         return true
@@ -521,6 +588,7 @@ end
 
 local function on_find_sessions(source, ...)
     local args = clone_args(...)
+    coordinator.last_find_args = args
     coordinator.last_search_result = select(1, likely_session_result(args)) or coordinator.last_search_result
     if not busy() then
         coordinator.generation = coordinator.generation + 1
@@ -620,9 +688,36 @@ register_command("cmm_session_status", function(full_command, parameters, ar)
     return true
 end)
 
+register_command("cmm_session_scan", function(full_command, parameters, ar)
+    session_environment("console_scan")
+    snapshot("console_scan")
+    console_reply(ar, "cmm_session_scan|ok|" .. state_line())
+    return true
+end)
+
+register_command("cmm_session_failures", function(full_command, parameters, ar)
+    console_reply(ar, "cmm_session_failures|recent_count=" .. tostring(#recent_events))
+    if coordinator.last_failure ~= nil then console_reply(ar, "last_failure|" .. coordinator.last_failure) end
+    local first = math.max(1, #recent_events - 12)
+    for i = first, #recent_events do
+        console_reply(ar, "recent|" .. tostring(i) .. "|" .. tostring(recent_events[i]))
+    end
+    return true
+end)
+
 register_command("cmm_session_reset", function(full_command, parameters, ar)
     reset_to_idle("console_reset")
     console_reply(ar, "cmm_session_reset|ok")
+    return true
+end)
+
+register_command("cmm_session_clear_payloads", function(full_command, parameters, ar)
+    coordinator.last_join_args = nil
+    coordinator.last_invite_result = nil
+    coordinator.last_search_result = nil
+    coordinator.last_host_args = nil
+    coordinator.last_find_args = nil
+    console_reply(ar, "cmm_session_clear_payloads|ok")
     return true
 end)
 
@@ -662,32 +757,8 @@ register_hook("WBP_Host_LoadSessionLevel", host_widget .. ":Load Session Level",
 register_hook("WBP_Browser_OnOpenLevel", browser_widget .. ":OnOpenLevel", function(_, ...) on_load_session_level("WBP_Browser_OnOpenLevel", ...) end)
 register_hook("WBP_ServerSlot_SetupSlotFromServerData", slot_widget .. ":SetupSlotFromServerData", function(_, ...) on_server_slot("WBP_ServerSlot_SetupSlotFromServerData", ...) end)
 
-local ok_load, load_err = pcall(function()
-    RegisterLoadMapPostHook(function(_, world_param)
-        local world = unwrap(world_param)
-        log("load_map_post", "world=" .. full_name(world) .. "|" .. state_line())
-        if join_flow_active() and not finish_if_joined("load_map_post") then
-            transition("travel_pending", "load_map_post")
-        end
-        ExecuteWithDelay(4000, function()
-            ExecuteInGameThread(function()
-                if not finish_if_joined("load_map_post_delayed") then snapshot("load_map_post_delayed") end
-            end)
-        end)
-    end)
-end)
-log("hook_register", "LoadMapPostHook|" .. tostring(ok_load) .. "|" .. tostring(load_err))
-
-local ok_notify, notify_err = pcall(function()
-    NotifyOnNewObject("/Script/Engine.GameInstance", function(object)
-        local instance = unwrap(object)
-        if is_valid(instance) then
-            coordinator.last_game_instance = instance
-            log("notify_game_instance", full_name(instance) .. "|class=" .. class_name(instance))
-        end
-    end)
-end)
-log("hook_register", "NotifyGameInstance|" .. tostring(ok_notify) .. "|" .. tostring(notify_err))
+log("hook_register", "LoadMapPostHook|disabled|broad_lifecycle_hook_deferred")
+log("hook_register", "NotifyGameInstance|disabled|broad_lifecycle_hook_deferred")
 
 log("startup", "version=" .. version .. "|helpers=" .. tostring(ok_helpers))
 ExecuteInGameThread(function() snapshot("startup") end)
@@ -708,32 +779,41 @@ const readme = [
   "- Completes the invite-accepted handoff once if the game accepts an invite but never dispatches `Join Session`.",
   "- Refuses duplicate guarded commands while a join/host/find/travel flow is active instead of stacking retries.",
   "- Captures the latest invite/search/join payloads and exposes deliberate recovery commands through the UE console.",
+  "- Reuses captured host/find Blueprint arguments for guarded console retries when available.",
+  "- Logs `session_environment` snapshots with world, net mode, controller count, pawn count, and PlayerState count.",
+  "- Leaves broad map-load and object-notify hooks disabled; only specific Clawed session/widget hooks are registered.",
+  "- Declares a conflict with the legacy `ClawedCoopSessionGuard` package ID and loads after `CoopCapacity8` when both packages are enabled.",
   "- Records structured session, invite, join, failure, timeout, world, widget, controller, and pawn markers to `UE4SS.log`.",
-  "- Writes compact failure bundles to `ue4ss/Mods/ClawedCoopSessionGuard/session-failures.log` when Lua file IO is available.",
+  "- Writes compact failure bundles to `ue4ss/Mods/CoopSessionGuard/session-failures.log` when Lua file IO is available.",
   "",
   "Console commands:",
   "",
   "- `cmm_session_status`: print the coordinator state and last failure.",
+  "- `cmm_session_scan`: print a diagnostic snapshot without dispatching session calls.",
+  "- `cmm_session_failures`: print recent guard events and the latest failure.",
   "- `cmm_session_reset`: release the coordinator lock after a stuck lobby/session flow.",
+  "- `cmm_session_clear_payloads`: clear captured invite/search/join/host/find payloads.",
   "- `cmm_session_find`: dispatch one guarded `Find Friends Sessions` call.",
   "- `cmm_session_host`: dispatch one guarded `Create  Friends Session` call.",
   "- `cmm_session_join_last`: join the latest captured server-slot or invite session result.",
   "",
   "Expected support markers:",
   "",
-  "- `[ClawedCoopSessionGuard] startup|...`",
-  "- `[ClawedCoopSessionGuard] hook_register|...`",
-  "- `[ClawedCoopSessionGuard] state_transition|...`",
-  "- `[ClawedCoopSessionGuard] invite_handoff|...`",
-  "- `[ClawedCoopSessionGuard] guarded_call|...`",
-  "- `[ClawedCoopSessionGuard] join_failure|...`",
-  "- `[ClawedCoopSessionGuard] join_timeout|...`",
-  "- `[ClawedCoopSessionGuard] failure_recent|...`",
+  "- `[CoopSessionGuard] startup|...`",
+  "- `[CoopSessionGuard] hook_register|...`",
+  "- `[CoopSessionGuard] session_environment|...`",
+  "- `[CoopSessionGuard] snapshot|...`",
+  "- `[CoopSessionGuard] state_transition|...`",
+  "- `[CoopSessionGuard] invite_handoff|...`",
+  "- `[CoopSessionGuard] guarded_call|...`",
+  "- `[CoopSessionGuard] join_failure|...`",
+  "- `[CoopSessionGuard] join_timeout|...`",
+  "- `[CoopSessionGuard] failure_recent|...`",
   "",
   "Collection path:",
   "",
   "- Primary: `Clawed\\Binaries\\Win64\\ue4ss\\UE4SS.log`",
-  "- Failure sidecar, if writable: `Clawed\\Binaries\\Win64\\ue4ss\\Mods\\ClawedCoopSessionGuard\\session-failures.log`",
+  "- Failure sidecar, if writable: `Clawed\\Binaries\\Win64\\ue4ss\\Mods\\CoopSessionGuard\\session-failures.log`",
   "",
   "Safety boundaries:",
   "",
@@ -742,7 +822,9 @@ const readme = [
   "- Does not force-close Clawed, mutate save data, or attempt to bypass server authority.",
   "- Uses only observed packaged Blueprint functions and UE4SS hooks/console commands.",
   "- Lua hooks are observational for the original UI flow; UE4SS has not been proven here to cancel original Blueprint execution.",
-  "- Host/client multiplayer behavior remains unvalidated until a two-account Steam session is tested."
+  "- Broad map-load and object-notify hooks are disabled because they share the same lifecycle risk class as the prior co-op crash path.",
+  "- No package-level player-count cap is imposed; actual maximum party size is governed by Clawed.",
+  "- Host/client multiplayer behavior remains unvalidated until tested across Clawed's supported party sizes."
 ].join("\n");
 const manifest = {
   schemaVersion: 1,
@@ -751,13 +833,14 @@ const manifest = {
   version,
   author: "Clawed Mod Manager",
   description:
-    "Prototype UE4SS coordinator that serializes Clawed co-op session intent, completes missing invite handoff, and captures failed-join diagnostics.",
+    "Prototype UE4SS coordinator that serializes Clawed co-op session intent without imposing a package-level player-count cap, completes missing invite handoff, and captures failed-join diagnostics.",
   game: "clawed",
   loader: "ue4ss",
   dependencies: [],
-  conflicts: [],
-  loadAfter: [],
+  conflicts: ["ClawedCoopSessionGuard"],
+  loadAfter: ["CoopCapacity8"],
   loadBefore: [],
+  packageIdentity: generatedPackageIdentity(modId),
   creatorAssets: generatedCreatorSupportMetadata({
     modId,
     modName,
@@ -825,6 +908,10 @@ async function writePackage(outputDirectory) {
       "completes invite-accepted flows only when no original Join Session dispatch is observed",
       "exposes deliberate console recovery commands instead of automatic join retry loops",
       "captures latest invite/search/join payloads for controlled user-driven recovery",
+      "reuses captured host/find Blueprint arguments for guarded console retries",
+      "logs session_environment snapshots with world, net mode, controller, pawn, and PlayerState counts",
+      "leaves broad map-load and object-notify hooks disabled",
+      "does not impose a package-level player-count cap",
       "records failure bundles and recent event context for support"
     ],
     safetyBoundaries: [
@@ -832,25 +919,30 @@ async function writePackage(outputDirectory) {
       "no Steam/EOS/executable/anti-cheat/GameMode/PlayerController asset patching",
       "no save, inventory, or world-item mutation",
       "observational hooks cannot guarantee original Blueprint execution is cancelled",
-      "host/client behavior unvalidated"
+      "multi-client supported-party-size behavior unvalidated"
     ],
     consoleCommands: [
       "cmm_session_status",
+      "cmm_session_scan",
+      "cmm_session_failures",
       "cmm_session_reset",
+      "cmm_session_clear_payloads",
       "cmm_session_find",
       "cmm_session_host",
       "cmm_session_join_last"
     ],
     logMarkers: [
-      "[ClawedCoopSessionGuard] state_transition|...",
-      "[ClawedCoopSessionGuard] guarded_call|...",
-      "[ClawedCoopSessionGuard] join_failure|...",
-      "[ClawedCoopSessionGuard] join_timeout|...",
-      "[ClawedCoopSessionGuard] failure_recent|..."
+      "[CoopSessionGuard] state_transition|...",
+      "[CoopSessionGuard] session_environment|...",
+      "[CoopSessionGuard] snapshot|...",
+      "[CoopSessionGuard] guarded_call|...",
+      "[CoopSessionGuard] join_failure|...",
+      "[CoopSessionGuard] join_timeout|...",
+      "[CoopSessionGuard] failure_recent|..."
     ],
     logPaths: [
       "Clawed\\Binaries\\Win64\\ue4ss\\UE4SS.log",
-      "Clawed\\Binaries\\Win64\\ue4ss\\Mods\\ClawedCoopSessionGuard\\session-failures.log"
+      "Clawed\\Binaries\\Win64\\ue4ss\\Mods\\CoopSessionGuard\\session-failures.log"
     ],
     packageEntries: [
       "manifest.json",

@@ -425,17 +425,17 @@ async function completeFirstRunOnboarding(
   const runtimeState = await waitForElectronWindowState(
     page,
     (state) =>
-      state.cmm.runtimeStatus === "configured" &&
-      state.cmm.runtimeReleaseValidation === "VALIDATED",
+      state.cmm.runtimeStatus === "unvalidated" &&
+      state.cmm.runtimeReleaseValidation === "UNVALIDATED",
     120_000,
-    "Timed out waiting for first-run packaged runtime setup to configure a validated runtime"
+    "Timed out waiting for first-run packaged runtime setup to configure an unvalidated runtime"
   );
   await writeElectronWindowEvidence(
     page,
     evidenceRoot,
     "05-onboarding-runtime-configured"
   );
-  expect(runtimeState.cmm.runtimeStatus).toBe("configured");
+  expect(runtimeState.cmm.runtimeStatus).toBe("unvalidated");
 
   await page.getByRole("button", { name: "Continue" }).click();
   await page
@@ -715,7 +715,7 @@ async function captureClawedWindowScreenshot(
     "    public static extern bool SetForegroundWindow(IntPtr hWnd);",
     "}",
     "'@",
-    "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1)",
+    "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' -and $_.MainWindowHandle -ne 0 } | Select-Object -First 1)",
     "if ($processes.Count -eq 0) { throw 'No visible Clawed window found for screenshot capture.' }",
     "$process = $processes[0]",
     "[void][CmmUser32]::SetForegroundWindow($process.MainWindowHandle)",
@@ -743,7 +743,7 @@ async function captureClawedWindowScreenshot(
 async function getClawedProcesses(): Promise<ProcessInfo[]> {
   const output = await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' } | Select-Object Id, ProcessName, MainWindowTitle)",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' } | Select-Object Id, ProcessName, MainWindowTitle)",
       "if ($processes.Count -eq 0) { '[]' } else { $processes | ConvertTo-Json -Compress }"
     ].join("; ")
   );
@@ -757,7 +757,7 @@ async function getClawedProcesses(): Promise<ProcessInfo[]> {
 async function requestClawedClose(): Promise<void> {
   await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' })",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' })",
       "foreach ($process in $processes) { [void]$process.CloseMainWindow() }",
       "$processes.Count"
     ].join("; ")

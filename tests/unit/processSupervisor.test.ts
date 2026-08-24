@@ -121,6 +121,102 @@ describe("process supervisor", () => {
     expect(platform.forceRequests).toBe(0);
   });
 
+  it("skips app-exit shutdown for observed processes not launched by CMM", async () => {
+    const platform = new FakeProcessPlatform([gameProcess()]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+
+    await supervisor.getSnapshot(executablePath);
+    const result = await supervisor.shutdownAppExitManagedProcess(2, 0);
+
+    expect(result.status).toBe("skipped");
+    expect(platform.gracefulRequests).toBe(0);
+    expect(platform.forceRequests).toBe(0);
+    expect(platform.processes).toHaveLength(1);
+  });
+
+  it("closes app-exit managed processes gracefully when the app closes", async () => {
+    const platform = new FakeProcessPlatform([gameProcess()]);
+    platform.requestGracefulClose = async () => {
+      platform.gracefulRequests += 1;
+      platform.processes = [];
+      return true;
+    };
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      {
+        delay: async () =>
+          new Promise((resolve) => {
+            setTimeout(resolve, 0);
+          })
+      }
+    );
+
+    supervisor.markAppExitManagedLaunch(executablePath);
+    await supervisor.waitForRunning(executablePath, 2, 0, {
+      appExitManaged: true
+    });
+    const result = await supervisor.shutdownAppExitManagedProcess(30_000, 250);
+
+    expect(result.status).toBe("closed");
+    expect(result.gracefulCloseRequested).toBe(true);
+    expect(result.forceTerminateRequested).toBe(false);
+    expect(platform.gracefulRequests).toBe(1);
+    expect(platform.forceRequests).toBe(0);
+    expect(supervisor.snapshot().lifecycleState).toBe("STOPPED");
+  });
+
+  it("does not app-exit shutdown a different process after the managed process exits", async () => {
+    const platform = new FakeProcessPlatform([gameProcess(42)]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+
+    supervisor.markAppExitManagedLaunch(executablePath);
+    await supervisor.waitForRunning(executablePath, 2, 0, {
+      appExitManaged: true
+    });
+    platform.processes = [gameProcess(84)];
+    const result = await supervisor.shutdownAppExitManagedProcess(2, 0);
+
+    expect(result.status).toBe("skipped");
+    expect(platform.gracefulRequests).toBe(0);
+    expect(platform.forceRequests).toBe(0);
+    expect(platform.processes[0]?.processId).toBe(84);
+  });
+
+  it("force terminates app-exit managed processes after the shutdown deadline", async () => {
+    const platform = new FakeProcessPlatform([gameProcess()]);
+    platform.requestGracefulClose = async () => {
+      platform.gracefulRequests += 1;
+      return new Promise<boolean>(() => undefined);
+    };
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+
+    supervisor.markAppExitManagedLaunch(executablePath);
+    await supervisor.waitForRunning(executablePath, 2, 0, {
+      appExitManaged: true
+    });
+    const result = await supervisor.shutdownAppExitManagedProcess(2, 0);
+
+    expect(result.status).toBe("terminated");
+    expect(result.timedOut).toBe(true);
+    expect(result.forceTerminateRequested).toBe(true);
+    expect(platform.gracefulRequests).toBe(1);
+    expect(platform.forceRequests).toBe(1);
+    expect(platform.processes).toHaveLength(0);
+  });
+
   it("supports explicit force termination after confirmation", async () => {
     const platform = new FakeProcessPlatform([gameProcess()]);
     const supervisor = new WindowsProcessSupervisor(

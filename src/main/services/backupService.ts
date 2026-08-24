@@ -15,6 +15,7 @@ import type {
 } from "../../shared/contracts/services";
 import { hashFileSha256 } from "./clawedModPackageService";
 import { cleanupManifestGeneratedArtifacts } from "./deploymentManifestCleanup";
+import { rmWithRetry } from "./fileRemoval";
 import type { LifecycleLogger } from "./lifecycleLogger";
 import { modProblem } from "./packageProblems";
 import { isPathInside } from "./packagePaths";
@@ -91,7 +92,7 @@ export class LocalBackupService implements BackupServiceContract {
         continue;
       }
 
-      await rm(file.absolutePath, { force: true });
+      await rmWithRetry(file.absolutePath, { force: true });
       removedFiles.push(file.relativePath);
     }
 

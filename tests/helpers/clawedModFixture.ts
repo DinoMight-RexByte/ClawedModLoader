@@ -25,9 +25,10 @@ export interface ClawedModFixtureOptions {
 export function createFixtureManifest(
   overrides?: Partial<ClawedModManifestV1>
 ): ClawedModManifestV1 {
+  const id = overrides?.id ?? "core-framework";
   return {
     schemaVersion: 1,
-    id: "core-framework",
+    id,
     name: "Core Framework",
     version: "1.0.0",
     author: "CMM Fixtures",
@@ -38,6 +39,11 @@ export function createFixtureManifest(
     conflicts: [],
     loadAfter: [],
     loadBefore: [],
+    packageIdentity: {
+      schemaVersion: 1,
+      id: `cmm:test:${id}`,
+      source: "cmmGenerated"
+    },
     ...overrides
   };
 }
