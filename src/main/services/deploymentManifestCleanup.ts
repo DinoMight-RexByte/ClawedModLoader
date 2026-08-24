@@ -1,4 +1,4 @@
-import { lstat, readdir, rm, rmdir } from "node:fs/promises";
+import { lstat, readdir, rmdir } from "node:fs/promises";
 import path from "node:path";
 
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "../../shared/contracts/app";
 import { isPathInside } from "./packagePaths";
 import { modProblem } from "./packageProblems";
+import { rmWithRetry } from "./fileRemoval";
 
 export interface ManifestCleanupResult {
   removedRuntimeGeneratedFiles: string[];
@@ -128,7 +129,7 @@ export async function cleanupManifestGeneratedArtifacts(
       continue;
     }
 
-    await rm(file.absolutePath, { force: true });
+    await rmWithRetry(file.absolutePath, { force: true });
     removedRuntimeGeneratedFiles.push(file.relativePath);
   }
 

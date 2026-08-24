@@ -15,6 +15,7 @@ import { promisify } from "node:util";
 import JSZip from "jszip";
 import {
   currentClawedSteamBuildId,
+  generatedPackageIdentity,
   generatedSupportedSteamBuilds,
   packageVirtualPath
 } from "./clawedBuildMetadata.mjs";
@@ -23,9 +24,9 @@ const execFileAsync = promisify(execFile);
 const defaultTargetPackagePaths = [
   "/Game/MenuSystemPro/ExampleContent/Art/Textures/Logos/Library_Logo"
 ];
-const modId = process.env.CMM_TEXTURE_OVERRIDE_ID ?? "CMMClawedTitleLogoOnly";
+const modId = process.env.CMM_TEXTURE_OVERRIDE_ID ?? "ModsActiveTitleLogo";
 const modName =
-  process.env.CMM_TEXTURE_OVERRIDE_NAME ?? "CMM Clawed Title Logo Only";
+  process.env.CMM_TEXTURE_OVERRIDE_NAME ?? "Mods Active Title Logo";
 const sourceImage =
   process.env.CMM_TEXTURE_OVERRIDE_SOURCE ??
   path.join(process.env.USERPROFILE ?? "", "Downloads", "Clawed Mods Active.png");
@@ -356,6 +357,7 @@ async function writePackage(
     conflicts: [],
     loadAfter: [],
     loadBefore: [],
+    packageIdentity: generatedPackageIdentity(modId),
     creatorAssets: textureCreatorAssets(payloadPaths, sourceImageSha256)
   };
   const readme = [

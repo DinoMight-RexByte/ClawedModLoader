@@ -30,6 +30,14 @@ export function generatedSupportedSteamBuilds(buildId, notes) {
     : [];
 }
 
+export function generatedPackageIdentity(modId, source = "cmmGenerated") {
+  return {
+    schemaVersion: 1,
+    id: `cmm:generated:${modId}`,
+    source
+  };
+}
+
 export function generatedCreatorSupportMetadata({
   modId,
   modName,

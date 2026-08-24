@@ -27,6 +27,7 @@ import {
   type ModIdentityRequest,
   type ModLibrarySnapshot,
   type ModOperationResult,
+  type ModProblem,
   type ReadmeResult,
   type ServiceStatus
 } from "../../shared/contracts/app";
@@ -149,12 +150,41 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
     }
 
     const layout = await this.storageService.getLayout();
+    const packageIdentityId = parsedPackage.manifest.packageIdentity?.id ?? null;
+    const replacementConfirmed =
+      request.replacement?.action === "replaceMatchingIdentity" &&
+      request.replacement.packageIdentityId === packageIdentityId;
+
+    if (request.replacement && !replacementConfirmed) {
+      return {
+        status: "failed",
+        mod: null,
+        packageIdentityId,
+        problems: [
+          modProblem(
+            "error",
+            "PACKAGE_IDENTITY_REPLACEMENT_MISMATCH",
+            "CMM blocked replacement because the selected package identity did not match the confirmation."
+          )
+        ]
+      };
+    }
+
     const targetPath = getInstalledModPath(
       layout.directories.libraryMods,
       parsedPackage.manifest.id,
       parsedPackage.manifest.version
     );
     const existingMetadata = await this.readMetadataAt(targetPath);
+    const identityMatches = packageIdentityId
+      ? uniqueMetadataByPath(
+          (await this.readAllMetadata()).filter(
+            (metadata) =>
+              metadata.packageIdentityId === packageIdentityId ||
+              metadata.manifest.packageIdentity?.id === packageIdentityId
+          )
+        )
+      : [];
 
     if (existingMetadata) {
       const existingMod = await this.toInstalledModVersion(existingMetadata);
@@ -172,9 +202,48 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
         };
       }
 
+      if (
+        packageIdentityId &&
+        !identityMatches.some((metadata) =>
+          samePath(metadata.installPath, existingMetadata.installPath)
+        )
+      ) {
+        identityMatches.push(existingMetadata);
+      }
+    }
+
+    if (identityMatches.length > 0 && !replacementConfirmed) {
+      return {
+        status: "needsReplacementConfirmation",
+        mod: null,
+        packageIdentityId,
+        replacementCandidates: await Promise.all(
+          identityMatches.map((metadata) => this.toInstalledModVersion(metadata))
+        ),
+        problems: [
+          modProblem(
+            "warning",
+            "PACKAGE_IDENTITY_ALREADY_INSTALLED",
+            identityMatches.length === 1
+              ? "A mod with the same package identity is already installed."
+              : "Mods with the same package identity are already installed.",
+            identityMatches
+              .map(
+                (metadata) =>
+                  `${metadata.name} (${metadata.id}@${metadata.version})`
+              )
+              .join("; ")
+          )
+        ]
+      };
+    }
+
+    if (existingMetadata) {
+      const existingMod = await this.toInstalledModVersion(existingMetadata);
       return {
         status: "duplicateDifferentHash",
         mod: existingMod,
+        packageIdentityId,
         problems: [
           modProblem(
             "warning",
@@ -186,10 +255,14 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       };
     }
 
-    if (await pathExists(targetPath)) {
+    const targetReplaced = identityMatches.some((metadata) =>
+      samePath(metadata.installPath, targetPath)
+    );
+    if (!targetReplaced && (await pathExists(targetPath))) {
       return {
         status: "failed",
         mod: null,
+        packageIdentityId,
         problems: [
           modProblem(
             "error",
@@ -205,6 +278,7 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       layout.directories.staging,
       `import-${Date.now()}-${randomUUID()}`
     );
+    let backups: ReplacementBackup[] = [];
 
     try {
       await this.packageService.extractPackage(parsedPackage, stagingPath);
@@ -223,30 +297,66 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
         `${JSON.stringify(metadata, null, 2)}\n`
       );
 
+      backups = await moveReplacementsToBackup(
+        identityMatches,
+        layout.directories.libraryMods,
+        layout.directories.staging
+      );
       await mkdir(path.dirname(targetPath), { recursive: true });
       await renameDirectoryWithRetry(stagingPath, targetPath);
       const installedMetadata = await this.readMetadataAt(targetPath);
+      const cleanupProblem = await cleanupReplacementBackups(backups);
+      const replacementProblem =
+        backups.length > 0
+          ? modProblem(
+              "info",
+              "PACKAGE_IDENTITY_REPLACED",
+              backups.length === 1
+                ? "Replaced the installed mod with the same package identity."
+                : "Replaced installed mods with the same package identity.",
+              backups
+                .map((backup) => `${backup.id}@${backup.version}`)
+                .join("; ")
+            )
+          : null;
 
       return {
         status: "installed",
         mod: installedMetadata
           ? await this.toInstalledModVersion(installedMetadata)
           : null,
-        problems: []
+        packageIdentityId,
+        problems: [replacementProblem, cleanupProblem].filter(
+          (problem): problem is ModProblem => problem !== null
+        )
       };
     } catch (error) {
       await rm(stagingPath, { recursive: true, force: true });
+      const rollbackProblem = await restoreReplacementBackups(backups).then(
+        () => null,
+        (rollbackError: unknown) =>
+          modProblem(
+            "error",
+            "PACKAGE_REPLACEMENT_ROLLBACK_FAILED",
+            "CMM could not fully restore packages after a failed replacement.",
+            rollbackError instanceof Error
+              ? rollbackError.message
+              : String(rollbackError)
+          )
+      );
       return {
         status: "failed",
         mod: null,
+        packageIdentityId,
         problems: [
           modProblem(
             "error",
             "PACKAGE_INSTALL_FAILED",
             "CMM could not safely install the mod package.",
             error instanceof Error ? error.message : String(error)
-          )
-        ]
+          ),
+          rollbackProblem
+        ].filter((problem): problem is ModProblem => problem !== null)
       };
     }
   }
@@ -410,6 +520,7 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       description: manifest.description,
       loader: manifest.loader,
       sha256,
+      packageIdentityId: manifest.packageIdentity?.id ?? null,
       enabled: false,
       installPath: targetPath,
       packagePath: path.join(targetPath, "package.clawedmod"),
@@ -512,6 +623,8 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       const parsed = MetadataSchema.parse(rawMetadata);
       return {
         ...parsed,
+        packageIdentityId:
+          parsed.packageIdentityId ?? parsed.manifest.packageIdentity?.id ?? null,
         installPath: targetPath,
         packagePath: path.join(targetPath, "package.clawedmod"),
         iconPath: (await pathExists(path.join(targetPath, "icon.png")))
@@ -551,6 +664,135 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       ]
     };
   }
+}
+
+interface ReplacementBackup {
+  id: string;
+  version: string;
+  originalPath: string;
+  backupPath: string;
+  backupRoot: string;
+}
+
+function uniqueMetadataByPath(
+  metadataRecords: InstalledModMetadata[]
+): InstalledModMetadata[] {
+  const seen = new Set<string>();
+  const unique: InstalledModMetadata[] = [];
+
+  for (const metadata of metadataRecords) {
+    const key = normalizedPathKey(metadata.installPath);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(metadata);
+  }
+
+  return unique;
+}
+
+async function moveReplacementsToBackup(
+  metadataRecords: InstalledModMetadata[],
+  libraryRoot: string,
+  stagingRoot: string
+): Promise<ReplacementBackup[]> {
+  if (metadataRecords.length === 0) {
+    return [];
+  }
+
+  const backupRoot = path.join(
+    stagingRoot,
+    `replace-${Date.now()}-${randomUUID()}`
+  );
+  const backups: ReplacementBackup[] = [];
+
+  try {
+    await mkdir(backupRoot, { recursive: true });
+    for (const metadata of metadataRecords) {
+      if (!isPathInside(libraryRoot, metadata.installPath)) {
+        throw new Error(
+          `Replacement target is outside the mod library: ${metadata.installPath}`
+        );
+      }
+
+      const backupPath = path.join(
+        backupRoot,
+        `${backups.length}-${encodeURIComponent(metadata.id)}-${encodeURIComponent(
+          metadata.version
+        )}`
+      );
+      await mkdir(path.dirname(backupPath), { recursive: true });
+      await renameDirectoryWithRetry(metadata.installPath, backupPath);
+      backups.push({
+        id: metadata.id,
+        version: metadata.version,
+        originalPath: metadata.installPath,
+        backupPath,
+        backupRoot
+      });
+    }
+
+    return backups;
+  } catch (error) {
+    await restoreReplacementBackups(backups);
+    await rm(backupRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function restoreReplacementBackups(
+  backups: ReplacementBackup[]
+): Promise<void> {
+  for (const backup of [...backups].reverse()) {
+    if (
+      !(await pathExists(backup.backupPath)) ||
+      (await pathExists(backup.originalPath))
+    ) {
+      continue;
+    }
+    await mkdir(path.dirname(backup.originalPath), { recursive: true });
+    await renameDirectoryWithRetry(backup.backupPath, backup.originalPath);
+  }
+}
+
+async function cleanupReplacementBackups(
+  backups: ReplacementBackup[]
+): Promise<ModProblem | null> {
+  if (backups.length === 0) {
+    return null;
+  }
+
+  try {
+    for (const backup of backups) {
+      await rm(backup.backupPath, { recursive: true, force: true });
+    }
+    for (const backupRoot of new Set(backups.map((backup) => backup.backupRoot))) {
+      await rm(backupRoot, { recursive: true, force: true });
+    }
+    for (const parentPath of new Set(
+      backups.map((backup) => path.dirname(backup.originalPath))
+    )) {
+      await rmdir(parentPath).catch(() => undefined);
+    }
+    return null;
+  } catch (error) {
+    return modProblem(
+      "warning",
+      "PACKAGE_REPLACEMENT_BACKUP_CLEANUP_FAILED",
+      "The replacement succeeded, but CMM could not remove every temporary backup folder.",
+      error instanceof Error ? error.message : String(error)
+    );
+  }
+}
+
+function samePath(left: string, right: string): boolean {
+  return normalizedPathKey(left) === normalizedPathKey(right);
+}
+
+function normalizedPathKey(targetPath: string): string {
+  const resolved = path.resolve(targetPath);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {

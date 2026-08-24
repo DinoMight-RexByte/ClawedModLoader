@@ -1,16 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  AppSettings,
   DeploymentOperationResult,
   DeploymentSnapshot,
-  GameDiscovery
+  GameDiscovery,
+  ModProblem
 } from "../../src/shared/contracts/app";
 import type {
   DeploymentServiceContract,
-  GameLocatorContract
+  GameLocatorContract,
+  SettingsServiceContract
 } from "../../src/shared/contracts/services";
 import { NullLifecycleLogger } from "../../src/main/services/lifecycleLogger";
 import { SteamLaunchService } from "../../src/main/services/launchService";
+import type {
+  PackagedRuntimeValidationResult,
+  PackagedRuntimeValidationService
+} from "../../src/main/services/packagedRuntimeValidationService";
 import type {
   GameProcessInfo,
   ProcessPlatform
@@ -156,9 +163,63 @@ class FakeDeploymentService implements DeploymentServiceContract {
     return this.moddedResult;
   }
 
+  async prepareRuntimeValidationDeployment(): Promise<DeploymentOperationResult> {
+    return okDeployment("runtimeUnvalidated");
+  }
+
+  async prepareUnrealMappingsDumpDeployment(): Promise<DeploymentOperationResult> {
+    return okDeployment("runtimeUnvalidated");
+  }
+
   async prepareVanillaDeployment(): Promise<DeploymentOperationResult> {
     this.vanillaCalls += 1;
     return this.vanillaResult;
+  }
+}
+
+class FakeSettingsService implements SettingsServiceContract {
+  constructor(
+    private settings: AppSettings = {
+      manualGameDirectory: null,
+      autoUpdatePackagedRuntime: true,
+      autoValidatePackagedRuntime: false
+    }
+  ) {}
+
+  async getSettings(): Promise<AppSettings> {
+    return this.settings;
+  }
+
+  async setManualGameDirectory(
+    gameDirectory: string | null
+  ): Promise<AppSettings> {
+    this.settings = { ...this.settings, manualGameDirectory: gameDirectory };
+    return this.settings;
+  }
+
+  async setAutoUpdatePackagedRuntime(
+    enabled: boolean
+  ): Promise<AppSettings> {
+    this.settings = { ...this.settings, autoUpdatePackagedRuntime: enabled };
+    return this.settings;
+  }
+
+  async setAutoValidatePackagedRuntime(
+    enabled: boolean
+  ): Promise<AppSettings> {
+    this.settings = { ...this.settings, autoValidatePackagedRuntime: enabled };
+    return this.settings;
+  }
+}
+
+class FakePackagedRuntimeValidationService {
+  calls = 0;
+
+  constructor(private readonly result: PackagedRuntimeValidationResult) {}
+
+  async validate(): Promise<PackagedRuntimeValidationResult> {
+    this.calls += 1;
+    return this.result;
   }
 }
 
@@ -172,13 +233,30 @@ function gameProcess(processId = 42): GameProcessInfo {
 }
 
 function okDeployment(
-  state: DeploymentOperationResult["state"]
+  state: DeploymentOperationResult["state"],
+  problems: ModProblem[] = []
 ): DeploymentOperationResult {
   return {
     status: "ok",
     state,
     manifest: null,
-    problems: []
+    problems
+  };
+}
+
+function packagedRuntimeBuildProblem(): ModProblem {
+  return {
+    severity: "warning",
+    code: "UE4SS_BUNDLED_RUNTIME_BUILD_UNVALIDATED",
+    message: "The packaged runtime has not been validated for this build."
+  };
+}
+
+function packagedRuntimeValidationError(): ModProblem {
+  return {
+    severity: "error",
+    code: "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE",
+    message: "The packaged runtime did not pass validation for this build."
   };
 }
 
@@ -247,6 +325,205 @@ describe("launch service", () => {
     expect(deploymentService.vanillaCalls).toBe(0);
     expect(platform.launchRequests).toBe(1);
     expect(platform.listProcessCalls).toBe(0);
+  });
+
+  it("launches with an unvalidated packaged runtime without prompting", async () => {
+    const platform = new FakeProcessPlatform([]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+    const deploymentService = new FakeDeploymentService(
+      okDeployment("runtimeUnvalidated", [packagedRuntimeBuildProblem()])
+    );
+    const validationService = new FakePackagedRuntimeValidationService({
+      status: "validated",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: []
+    });
+    const service = new SteamLaunchService(
+      new FakeGameLocator(readyDiscovery()),
+      supervisor,
+      platform,
+      new NullLifecycleLogger(),
+      { launchDetectTimeoutMs: 2, pollIntervalMs: 0 },
+      deploymentService,
+      new FakeSettingsService(),
+      validationService as unknown as PackagedRuntimeValidationService
+    );
+
+    const result = await service.runLaunchCommand({ kind: "launchModded" });
+
+    expect(result.status).toBe("completed");
+    expect(deploymentService.moddedCalls).toBe(1);
+    expect(validationService.calls).toBe(0);
+    expect(platform.launchRequests).toBe(1);
+  });
+
+  it("does not auto-validate a successful unvalidated packaged deployment", async () => {
+    const platform = new FakeProcessPlatform([]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+    const deploymentService = new FakeDeploymentService(
+      okDeployment("runtimeUnvalidated", [packagedRuntimeBuildProblem()])
+    );
+    const validationService = new FakePackagedRuntimeValidationService({
+      status: "validated",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: []
+    });
+    const service = new SteamLaunchService(
+      new FakeGameLocator(readyDiscovery()),
+      supervisor,
+      platform,
+      new NullLifecycleLogger(),
+      { launchDetectTimeoutMs: 2, pollIntervalMs: 0 },
+      deploymentService,
+      new FakeSettingsService({
+        manualGameDirectory: null,
+        autoUpdatePackagedRuntime: true,
+        autoValidatePackagedRuntime: true
+      }),
+      validationService as unknown as PackagedRuntimeValidationService
+    );
+
+    const result = await service.runLaunchCommand({ kind: "launchModded" });
+
+    expect(result.status).toBe("completed");
+    expect(deploymentService.moddedCalls).toBe(1);
+    expect(validationService.calls).toBe(0);
+    expect(platform.launchRequests).toBe(1);
+  });
+
+  it("remembers automatic packaged runtime validation from an error action", async () => {
+    const platform = new FakeProcessPlatform([]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+    const deploymentService = new FakeDeploymentService(
+      {
+        status: "blocked",
+        state: "runtimeIncompatible",
+        manifest: null,
+        problems: [packagedRuntimeValidationError()]
+      }
+    );
+    const validationService = new FakePackagedRuntimeValidationService({
+      status: "validated",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: []
+    });
+    const settingsService = new FakeSettingsService();
+    const service = new SteamLaunchService(
+      new FakeGameLocator(readyDiscovery()),
+      supervisor,
+      platform,
+      new NullLifecycleLogger(),
+      { launchDetectTimeoutMs: 2, pollIntervalMs: 0 },
+      deploymentService,
+      settingsService,
+      validationService as unknown as PackagedRuntimeValidationService
+    );
+
+    const result = await service.runLaunchCommand({
+      kind: "launchModded",
+      runtimeValidationConfirmed: true,
+      alwaysValidateRuntime: true
+    });
+
+    expect(result.status).toBe("blocked");
+    expect((await settingsService.getSettings()).autoValidatePackagedRuntime).toBe(
+      true
+    );
+  });
+
+  it("surfaces validation flow access on packaged runtime validation errors", async () => {
+    const platform = new FakeProcessPlatform([]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+    const deploymentService = new FakeDeploymentService({
+      status: "blocked",
+      state: "runtimeIncompatible",
+      manifest: null,
+      problems: [packagedRuntimeValidationError()]
+    });
+    const validationService = new FakePackagedRuntimeValidationService({
+      status: "validated",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: []
+    });
+    const service = new SteamLaunchService(
+      new FakeGameLocator(readyDiscovery()),
+      supervisor,
+      platform,
+      new NullLifecycleLogger(),
+      { launchDetectTimeoutMs: 2, pollIntervalMs: 0 },
+      deploymentService,
+      new FakeSettingsService(),
+      validationService as unknown as PackagedRuntimeValidationService
+    );
+
+    const result = await service.runLaunchCommand({ kind: "launchModded" });
+
+    expect(result.status).toBe("blocked");
+    expect(result.canOpenRuntimeValidationFlow).toBe(true);
+    expect(validationService.calls).toBe(0);
+    expect(platform.launchRequests).toBe(0);
+  });
+
+  it("runs validation from a packaged runtime validation error action", async () => {
+    const platform = new FakeProcessPlatform([]);
+    const supervisor = new WindowsProcessSupervisor(
+      platform,
+      new NullLifecycleLogger(),
+      { delay: async () => undefined }
+    );
+    const deploymentService = new FakeDeploymentService({
+      status: "blocked",
+      state: "runtimeIncompatible",
+      manifest: null,
+      problems: [packagedRuntimeValidationError()]
+    });
+    const validationService = new FakePackagedRuntimeValidationService({
+      status: "validated",
+      evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+      recording: null,
+      problems: []
+    });
+    const service = new SteamLaunchService(
+      new FakeGameLocator(readyDiscovery()),
+      supervisor,
+      platform,
+      new NullLifecycleLogger(),
+      { launchDetectTimeoutMs: 2, pollIntervalMs: 0 },
+      deploymentService,
+      new FakeSettingsService(),
+      validationService as unknown as PackagedRuntimeValidationService
+    );
+
+    const result = await service.runLaunchCommand({
+      kind: "launchModded",
+      runtimeValidationConfirmed: true
+    });
+
+    expect(result.status).toBe("blocked");
+    expect(result.canOpenRuntimeValidationFlow).toBe(true);
+    expect(deploymentService.moddedCalls).toBe(2);
+    expect(validationService.calls).toBe(1);
+    expect(platform.launchRequests).toBe(0);
   });
 
   it("blocks vanilla launch when vanilla restoration is not safe", async () => {

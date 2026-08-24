@@ -20,7 +20,9 @@ export type LaunchMode = z.infer<typeof LaunchModeSchema>;
 
 export const LaunchCommandRequestSchema = z.object({
   kind: LaunchCommandKindSchema,
-  forceCloseConfirmed: z.boolean().optional()
+  forceCloseConfirmed: z.boolean().optional(),
+  runtimeValidationConfirmed: z.boolean().optional(),
+  alwaysValidateRuntime: z.boolean().optional()
 });
 export type LaunchCommandRequest = z.infer<typeof LaunchCommandRequestSchema>;
 
@@ -50,6 +52,8 @@ export const LaunchCommandResultSchema = z.object({
   message: z.string(),
   nextStep: z.string().optional(),
   requiresForceCloseConfirmation: z.boolean().optional(),
+  requiresRuntimeValidationConfirmation: z.boolean().optional(),
+  canOpenRuntimeValidationFlow: z.boolean().optional(),
   occurredAt: z.string()
 });
 export type LaunchCommandResult = z.infer<typeof LaunchCommandResultSchema>;
@@ -81,6 +85,7 @@ export const DiagnosticErrorSchema = z.object({
     "deploymentService",
     "runtimeManager",
     "assetRegistryService",
+    "unrealMappingsService",
     "security"
   ]),
   code: z.string(),
@@ -124,7 +129,8 @@ export type GameDiscovery = z.infer<typeof GameDiscoverySchema>;
 
 export const AppSettingsSchema = z.object({
   manualGameDirectory: z.string().nullable(),
-  autoUpdatePackagedRuntime: z.boolean().default(true)
+  autoUpdatePackagedRuntime: z.boolean().default(true),
+  autoValidatePackagedRuntime: z.boolean().default(false)
 });
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
@@ -142,6 +148,15 @@ export const SetAutoUpdatePackagedRuntimeRequestSchema = z
   .strict();
 export type SetAutoUpdatePackagedRuntimeRequest = z.infer<
   typeof SetAutoUpdatePackagedRuntimeRequestSchema
+>;
+
+export const SetAutoValidatePackagedRuntimeRequestSchema = z
+  .object({
+    enabled: z.boolean()
+  })
+  .strict();
+export type SetAutoValidatePackagedRuntimeRequest = z.infer<
+  typeof SetAutoValidatePackagedRuntimeRequestSchema
 >;
 
 export const GameProcessSnapshotSchema = z.object({
@@ -306,6 +321,7 @@ export type CreatorMeshExportFormat = z.infer<
 export const CreatorModelPreviewRoleSchema = z.enum([
   "staticMesh",
   "skeletalMesh",
+  "skeleton",
   "unknown"
 ]);
 export type CreatorModelPreviewRole = z.infer<
@@ -487,6 +503,35 @@ export type CreatorAssetMetadataV1 = z.infer<
   typeof CreatorAssetMetadataV1Schema
 >;
 
+export const ClawedModPackageIdentitySourceSchema = z.enum([
+  "author",
+  "cmmGenerated",
+  "externalImport",
+  "creatorExport",
+  "manual"
+]);
+export type ClawedModPackageIdentitySource = z.infer<
+  typeof ClawedModPackageIdentitySourceSchema
+>;
+
+export const ClawedModPackageIdentityV1Schema = z
+  .object({
+    schemaVersion: z.literal(1),
+    id: z
+      .string()
+      .min(3)
+      .max(160)
+      .regex(
+        /^[A-Za-z0-9][A-Za-z0-9._:-]*$/,
+        "Package identity IDs must use letters, numbers, dot, underscore, colon, or hyphen."
+      ),
+    source: ClawedModPackageIdentitySourceSchema
+  })
+  .strict();
+export type ClawedModPackageIdentityV1 = z.infer<
+  typeof ClawedModPackageIdentityV1Schema
+>;
+
 export const ClawedModManifestV1Schema = z
   .object({
     schemaVersion: z.literal(1),
@@ -501,6 +546,7 @@ export const ClawedModManifestV1Schema = z
     conflicts: z.array(z.string().min(1)),
     loadAfter: z.array(z.string().min(1)),
     loadBefore: z.array(z.string().min(1)),
+    packageIdentity: ClawedModPackageIdentityV1Schema.optional(),
     creatorAssets: CreatorAssetMetadataV1Schema.optional()
   })
   .strict()
@@ -601,6 +647,9 @@ export type CreatorAssetConflictState = z.infer<
   typeof CreatorAssetConflictStateSchema
 >;
 
+export const CreatorViewportStateSchema = z.enum(["none", "viewable"]);
+export type CreatorViewportState = z.infer<typeof CreatorViewportStateSchema>;
+
 export const CreatorAssetIndexEntrySchema = z
   .object({
     id: z.string().min(1),
@@ -628,6 +677,7 @@ export const CreatorAssetIndexEntrySchema = z
     validationState: CreatorValidationStateSchema.nullable(),
     deploymentRoute: CreatorDeploymentRouteSchema.nullable(),
     exportState: CreatorExportEligibilityStateSchema.nullable(),
+    viewportState: CreatorViewportStateSchema.default("none"),
     conflictState: CreatorAssetConflictStateSchema
   })
   .strict();
@@ -802,7 +852,8 @@ export const CreatorAssetTreeNodeSchema = z
     packageName: z.string().min(1).nullable().default(null),
     validationState: CreatorValidationStateSchema.nullable().default(null),
     conflictState: CreatorAssetConflictStateSchema.nullable().default(null),
-    exportState: CreatorExportEligibilityStateSchema.nullable().default(null)
+    exportState: CreatorExportEligibilityStateSchema.nullable().default(null),
+    viewportState: CreatorViewportStateSchema.default("none")
   })
   .strict();
 export type CreatorAssetTreeNode = z.infer<
@@ -988,6 +1039,7 @@ export const CreatorModelPreviewPayloadSchema = z
     source: z.enum([
       "userOwned",
       "generated",
+      "packagePayload",
       "cachedBaseGame",
       "decodedBaseGame"
     ]),
@@ -1132,6 +1184,119 @@ export type CreatorMeshExportResult = z.infer<
   typeof CreatorMeshExportResultSchema
 >;
 
+export const CreatorMeshPackageExportDialogRequestSchema = z
+  .object({
+    assetIds: z.array(z.string().min(1)).min(1).max(50)
+  })
+  .strict();
+export type CreatorMeshPackageExportDialogRequest = z.infer<
+  typeof CreatorMeshPackageExportDialogRequestSchema
+>;
+
+export const CreatorMeshPackageExportRequestSchema =
+  CreatorMeshPackageExportDialogRequestSchema.extend({
+    destinationPath: z.string().min(1)
+  }).strict();
+export type CreatorMeshPackageExportRequest = z.infer<
+  typeof CreatorMeshPackageExportRequestSchema
+>;
+
+export const CreatorMeshPackageExportItemSchema = z
+  .object({
+    asset: CreatorAssetIndexEntrySchema.nullable(),
+    status: z.enum([
+      "exported",
+      "blocked",
+      "unsupported",
+      "dependency-missing",
+      "decode-error",
+      "export-error"
+    ]),
+    format: CreatorMeshExportFormatSchema.nullable(),
+    payloadPath: CreatorPayloadPathSchema.nullable(),
+    bytesWritten: z.number().int().nonnegative().nullable().default(null),
+    metadata: CreatorModelPreviewMetadataSchema,
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type CreatorMeshPackageExportItem = z.infer<
+  typeof CreatorMeshPackageExportItemSchema
+>;
+
+export const CreatorMeshPackageExportResultSchema = z
+  .object({
+    status: z.enum([
+      "exported",
+      "partial",
+      "blocked",
+      "empty",
+      "cancelled",
+      "export-error"
+    ]),
+    destinationPath: z.string().min(1).nullable(),
+    bytesWritten: z.number().int().nonnegative().nullable().default(null),
+    itemCount: z.number().int().nonnegative(),
+    exportedCount: z.number().int().nonnegative(),
+    items: z.array(CreatorMeshPackageExportItemSchema),
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type CreatorMeshPackageExportResult = z.infer<
+  typeof CreatorMeshPackageExportResultSchema
+>;
+
+export const CreatorMappingsDumpResultSchema = z
+  .object({
+    status: z.enum(["ready", "generated", "blocked", "failed"]),
+    mappingsPath: z.string().min(1).nullable(),
+    evidencePath: z.string().min(1).nullable(),
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type CreatorMappingsDumpResult = z.infer<
+  typeof CreatorMappingsDumpResultSchema
+>;
+
+export const CreatorMappingsDumpProgressStageSchema = z.enum([
+  "checking",
+  "staging",
+  "launching",
+  "waitingForGame",
+  "waitingForMappings",
+  "closingGame",
+  "restoringVanilla",
+  "complete",
+  "blocked",
+  "failed"
+]);
+export type CreatorMappingsDumpProgressStage = z.infer<
+  typeof CreatorMappingsDumpProgressStageSchema
+>;
+
+export const CreatorMappingsDumpProgressStatusSchema = z.enum([
+  "running",
+  "done",
+  "blocked",
+  "failed"
+]);
+export type CreatorMappingsDumpProgressStatus = z.infer<
+  typeof CreatorMappingsDumpProgressStatusSchema
+>;
+
+export const CreatorMappingsDumpProgressSchema = z
+  .object({
+    stage: CreatorMappingsDumpProgressStageSchema,
+    status: CreatorMappingsDumpProgressStatusSchema,
+    message: z.string().min(1),
+    detail: z.string().min(1).nullable().default(null),
+    mappingsPath: z.string().min(1).nullable().default(null),
+    evidencePath: z.string().min(1).nullable().default(null)
+  })
+  .strict();
+export type CreatorMappingsDumpProgress = z.infer<
+  typeof CreatorMappingsDumpProgressSchema
+>;
+
 export const CreatorAssetReportOutputSchema = z.enum([
   "assetIndex",
   "dependencyGraph",
@@ -1175,6 +1340,7 @@ export const InstalledModVersionSchema = z.object({
   description: z.string(),
   loader: ModLoaderSchema,
   sha256: z.string(),
+  packageIdentityId: z.string().min(1).nullable().optional(),
   enabled: z.boolean(),
   installPath: z.string(),
   packagePath: z.string(),
@@ -1205,9 +1371,22 @@ export const ModLibrarySnapshotSchema = z.object({
 });
 export type ModLibrarySnapshot = z.infer<typeof ModLibrarySnapshotSchema>;
 
-export const ImportModPackageRequestSchema = z.object({
-  packagePath: z.string().min(1)
-});
+export const PackageIdentityReplacementRequestSchema = z
+  .object({
+    action: z.literal("replaceMatchingIdentity"),
+    packageIdentityId: z.string().min(1)
+  })
+  .strict();
+export type PackageIdentityReplacementRequest = z.infer<
+  typeof PackageIdentityReplacementRequestSchema
+>;
+
+export const ImportModPackageRequestSchema = z
+  .object({
+    packagePath: z.string().min(1),
+    replacement: PackageIdentityReplacementRequestSchema.optional()
+  })
+  .strict();
 export type ImportModPackageRequest = z.infer<
   typeof ImportModPackageRequestSchema
 >;
@@ -1217,9 +1396,12 @@ export const ImportModPackageResultSchema = z.object({
     "installed",
     "alreadyInstalled",
     "duplicateDifferentHash",
+    "needsReplacementConfirmation",
     "failed"
   ]),
   mod: InstalledModVersionSchema.nullable(),
+  packageIdentityId: z.string().min(1).nullable().optional(),
+  replacementCandidates: z.array(InstalledModVersionSchema).optional(),
   problems: z.array(ModProblemSchema)
 });
 export type ImportModPackageResult = z.infer<
@@ -1839,6 +2021,7 @@ export type DeploymentState = z.infer<typeof DeploymentStateSchema>;
 export const RuntimeStatusSchema = z.enum([
   "missing",
   "configured",
+  "validated",
   "invalid",
   "unvalidated",
   "incompatible"
@@ -1848,13 +2031,49 @@ export type RuntimeStatus = z.infer<typeof RuntimeStatusSchema>;
 export const RuntimeSourceSchema = z.enum(["bundled", "user"]);
 export type RuntimeSource = z.infer<typeof RuntimeSourceSchema>;
 
+export const RuntimeReleaseValidationSchema = z.enum([
+  "UNVALIDATED",
+  "VALIDATED",
+  "INCOMPATIBLE"
+]);
+export type RuntimeReleaseValidation = z.infer<
+  typeof RuntimeReleaseValidationSchema
+>;
+
+export const Ue4ssRuntimeValidationRecordSchema = z
+  .object({
+    status: z.enum(["VALIDATED", "INCOMPATIBLE"]),
+    validatedAt: z.string(),
+    steamBuildId: z.string().min(1).nullable(),
+    fingerprintSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).nullable(),
+    evidencePath: z.string().min(1),
+    markerModId: z.string().min(1),
+    sourceSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+    details: z.string().min(1).optional()
+  })
+  .strict()
+  .superRefine((record, context) => {
+    if (!record.steamBuildId && !record.fingerprintSha256) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steamBuildId"],
+        message:
+          "UE4SS runtime validation evidence must include a Steam build ID or game fingerprint."
+      });
+    }
+  });
+export type Ue4ssRuntimeValidationRecord = z.infer<
+  typeof Ue4ssRuntimeValidationRecordSchema
+>;
+
 export const Ue4ssRuntimeInstallSchema = z.object({
   version: z.string(),
   installPath: z.string(),
   importedAt: z.string(),
   sourceSha256: z.string(),
   source: RuntimeSourceSchema.optional(),
-  releaseValidation: z.enum(["UNVALIDATED", "VALIDATED"])
+  releaseValidation: RuntimeReleaseValidationSchema,
+  validation: Ue4ssRuntimeValidationRecordSchema.optional()
 });
 export type Ue4ssRuntimeInstall = z.infer<
   typeof Ue4ssRuntimeInstallSchema
@@ -1919,6 +2138,55 @@ export const ImportUe4ssRuntimeResultSchema = z.object({
 });
 export type ImportUe4ssRuntimeResult = z.infer<
   typeof ImportUe4ssRuntimeResultSchema
+>;
+
+export const RecordUe4ssRuntimeValidationRequestSchema = z
+  .object({
+    status: z.enum(["VALIDATED", "INCOMPATIBLE"]),
+    steamBuildId: z.string().min(1).nullable(),
+    fingerprintSha256: z.string().regex(/^[a-fA-F0-9]{64}$/).nullable(),
+    evidencePath: z.string().min(1),
+    markerModId: z.string().min(1),
+    details: z.string().min(1).optional()
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (!request.steamBuildId && !request.fingerprintSha256) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["steamBuildId"],
+        message:
+          "UE4SS runtime validation evidence must include a Steam build ID or game fingerprint."
+      });
+    }
+  });
+export type RecordUe4ssRuntimeValidationRequest = z.infer<
+  typeof RecordUe4ssRuntimeValidationRequestSchema
+>;
+
+export const RecordUe4ssRuntimeValidationResultSchema = z.object({
+  status: z.enum(["recorded", "blocked", "failed"]),
+  runtime: Ue4ssRuntimeInstallSchema.nullable(),
+  problems: z.array(ModProblemSchema)
+});
+export type RecordUe4ssRuntimeValidationResult = z.infer<
+  typeof RecordUe4ssRuntimeValidationResultSchema
+>;
+
+export const ValidatePackagedRuntimeResultSchema = z.object({
+  status: z.enum([
+    "validated",
+    "incompatible",
+    "blocked",
+    "failed",
+    "cancelled"
+  ]),
+  evidencePath: z.string().min(1).nullable(),
+  recording: RecordUe4ssRuntimeValidationResultSchema.nullable(),
+  problems: z.array(ModProblemSchema)
+});
+export type ValidatePackagedRuntimeResult = z.infer<
+  typeof ValidatePackagedRuntimeResultSchema
 >;
 
 export const DeploymentFileRecordSchema = z.object({
@@ -2028,6 +2296,7 @@ export const PlaySnapshotSchema = z.object({
   enabledMods: z.number().int().nonnegative(),
   profileValidity: ProfileValiditySchema,
   deploymentState: DeploymentStateSchema,
+  runtime: RuntimeSnapshotSchema,
   conflicts: ConflictSummarySchema,
   discovery: GameDiscoverySchema,
   process: GameProcessSnapshotSchema,

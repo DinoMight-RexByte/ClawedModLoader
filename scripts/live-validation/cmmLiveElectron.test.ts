@@ -265,7 +265,7 @@ function electronValidationLua(modId: string, label: string): string {
 async function getClawedProcesses(): Promise<ProcessInfo[]> {
   const output = await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' } | Select-Object Id, ProcessName, MainWindowTitle)",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' } | Select-Object Id, ProcessName, MainWindowTitle)",
       "if ($processes.Count -eq 0) { '[]' } else { $processes | ConvertTo-Json -Compress }"
     ].join("; ")
   );
@@ -279,7 +279,7 @@ async function getClawedProcesses(): Promise<ProcessInfo[]> {
 async function requestClawedClose(): Promise<void> {
   await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' })",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' })",
       "foreach ($process in $processes) { [void]$process.CloseMainWindow() }",
       "$processes.Count"
     ].join("; ")

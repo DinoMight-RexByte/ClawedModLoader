@@ -2,9 +2,14 @@ import { dialog, ipcMain } from "electron";
 import { ZodError } from "zod";
 
 import {
+  IPC_CHANNELS,
   ipcContracts,
   type IpcContract
 } from "../../shared/contracts/ipc";
+import {
+  CreatorMappingsDumpProgressSchema,
+  type ImportModPackageResult
+} from "../../shared/contracts/app";
 import type { CoreServices } from "../../shared/contracts/services";
 
 function toUserSafeError(error: unknown): Error {
@@ -32,6 +37,74 @@ function registerHandler<TRequest, TResponse>(
       throw toUserSafeError(error);
     }
   });
+}
+
+async function importExternalModPackageWithPrompt(
+  services: CoreServices,
+  packagePath: string
+): Promise<ImportModPackageResult> {
+  const result = await services.externalImportService.importExternalModPackage({
+    packagePath
+  });
+
+  if (
+    result.status !== "needsReplacementConfirmation" ||
+    !result.packageIdentityId
+  ) {
+    return result;
+  }
+
+  const response = await dialog.showMessageBox({
+    type: "warning",
+    title: "Replace installed mod?",
+    message: "CMM found an installed mod with the same package identity.",
+    detail: formatReplacementPromptDetail(result),
+    buttons: ["Cancel", "Replace Matching Mods"],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  });
+
+  if (response.response !== 1) {
+    return {
+      ...result,
+      status: "failed",
+      mod: null,
+      problems: [
+        {
+          severity: "info",
+          code: "PACKAGE_IDENTITY_REPLACEMENT_CANCELLED",
+          message: "Mod import was cancelled before replacing installed mods."
+        }
+      ]
+    };
+  }
+
+  return services.externalImportService.importExternalModPackage({
+    packagePath,
+    replacement: {
+      action: "replaceMatchingIdentity",
+      packageIdentityId: result.packageIdentityId
+    }
+  });
+}
+
+function formatReplacementPromptDetail(result: ImportModPackageResult): string {
+  const candidates = result.replacementCandidates ?? [];
+  const installed = candidates.length
+    ? candidates
+        .map((candidate) => `${candidate.name} (${candidate.id}@${candidate.version})`)
+        .join("\n")
+    : "No installed package details were available.";
+
+  return [
+    "Display names are not used for this replacement decision.",
+    "",
+    "Matching installed mods:",
+    installed,
+    "",
+    "Replace the matching installed mod entries with the selected package?"
+  ].join("\n");
 }
 
 export function registerIpcHandlers(services: CoreServices): void {
@@ -83,6 +156,10 @@ export function registerIpcHandlers(services: CoreServices): void {
     services.settingsService.setAutoUpdatePackagedRuntime(request.enabled)
   );
 
+  registerHandler(ipcContracts.setAutoValidatePackagedRuntime, (request) =>
+    services.settingsService.setAutoValidatePackagedRuntime(request.enabled)
+  );
+
   registerHandler(ipcContracts.getLifecycleSnapshot, async () => {
     const discovery = await services.gameLocator.discover();
     return services.processSupervisor.getSnapshot(discovery.gameExecutable);
@@ -130,9 +207,7 @@ export function registerIpcHandlers(services: CoreServices): void {
       };
     }
 
-    return services.externalImportService.importExternalModPackage({
-      packagePath: result.filePaths[0]
-    });
+    return importExternalModPackageWithPrompt(services, result.filePaths[0]);
   });
 
   registerHandler(ipcContracts.uninstallMod, async (request) => {
@@ -339,8 +414,8 @@ export function registerIpcHandlers(services: CoreServices): void {
     services.exportImportService.acceptMissingModpackReferences()
   );
 
-  registerHandler(ipcContracts.getDeploymentSnapshot, () =>
-    services.deploymentService.getSnapshot()
+  registerHandler(ipcContracts.getDeploymentSnapshot, async () =>
+    services.deploymentService.getSnapshot(await services.gameLocator.discover())
   );
 
   registerHandler(ipcContracts.prepareVanillaDeployment, async () => {
@@ -348,12 +423,22 @@ export function registerIpcHandlers(services: CoreServices): void {
     return services.deploymentService.prepareVanillaDeployment(discovery);
   });
 
-  registerHandler(ipcContracts.getRuntimeSnapshot, () =>
-    services.runtimeManager.getRuntimeSnapshot()
+  registerHandler(ipcContracts.getRuntimeSnapshot, async () =>
+    (await services.diagnosticsService.getDiagnosticsSummary()).runtime
   );
 
   registerHandler(ipcContracts.installBundledUe4ssRuntime, () =>
     services.runtimeManager.installBundledUe4ssRuntime()
+  );
+
+  registerHandler(ipcContracts.validatePackagedRuntime, async () =>
+    services.packagedRuntimeValidationService.validate(
+      await services.gameLocator.rescan()
+    )
+  );
+
+  registerHandler(ipcContracts.cancelPackagedRuntimeValidation, () =>
+    services.packagedRuntimeValidationService.cancel()
   );
 
   registerHandler(ipcContracts.importUe4ssRuntime, (request) =>
@@ -449,6 +534,57 @@ export function registerIpcHandlers(services: CoreServices): void {
       destinationPath: result.filePath
     });
   });
+
+  registerHandler(ipcContracts.chooseAndExportCreatorMeshPackage, async (request) => {
+    const result = await dialog.showSaveDialog({
+      title: "Export visible creator models",
+      defaultPath: "creator-visible-models.clawedmod",
+      filters: [{ name: "Clawed Mod Package", extensions: ["clawedmod"] }]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return {
+        status: "cancelled" as const,
+        destinationPath: null,
+        bytesWritten: null,
+        itemCount: request.assetIds.length,
+        exportedCount: 0,
+        items: [],
+        problems: [
+          {
+            severity: "info" as const,
+            code: "CREATOR_MESH_PACKAGE_EXPORT_CANCELLED",
+            message: "No creator model package path was selected."
+          }
+        ]
+      };
+    }
+
+    return services.assetRegistryService.exportMeshPackage({
+      assetIds: request.assetIds,
+      destinationPath: result.filePath
+    });
+  });
+
+  ipcMain.handle(
+    ipcContracts.generateCreatorMappings.channel,
+    async (event, rawRequest: unknown) => {
+      try {
+        ipcContracts.generateCreatorMappings.requestSchema.parse(rawRequest);
+        const response = await services.unrealMappingsService.generateMappings(
+          (progress) => {
+            event.sender.send(
+              IPC_CHANNELS.creatorMappingsProgress,
+              CreatorMappingsDumpProgressSchema.parse(progress)
+            );
+          }
+        );
+        return ipcContracts.generateCreatorMappings.responseSchema.parse(response);
+      } catch (error) {
+        throw toUserSafeError(error);
+      }
+    }
+  );
 
   registerHandler(ipcContracts.getCreatorAssetReport, (request) =>
     services.assetRegistryService.getReport(request)

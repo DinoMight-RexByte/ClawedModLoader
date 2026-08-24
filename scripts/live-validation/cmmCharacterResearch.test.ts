@@ -36,7 +36,7 @@ const liveResearchEnabled =
   process.env.CMM_LIVE_CLAWED_CHARACTER_RESEARCH === "1";
 const defaultClawedInstallPath =
   "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Clawed";
-const bundledUe4ssVersion = "ue4ss-experimental-latest-1c1a1497";
+const bundledUe4ssVersion = "ue4ss-v3.0.1-1028-gd7e7826d";
 
 class FakeStorageService implements StorageServiceContract {
   constructor(private readonly layout: AppStorageLayout) {}
@@ -97,11 +97,9 @@ describe.runIf(liveResearchEnabled)("live Clawed character framework research", 
       ),
       bundledUe4ssVersion,
       bundledUe4ssCompatibility: {
-        status: "validated",
+        status: "unvalidated",
         message:
-          "Packaged UE4SS experimental-latest commit 1c1a1497 loads Lua mods and honors generated mods.txt Lua startup order on Clawed build 24719259.",
-        technicalDetail:
-          "Live validation on 2026-08-13 loaded the official nested layout through the local dwmapi proxy and observed generated .clawedmod Lua startup in CMM profile order."
+          "Packaged UE4SS v3.0.1-1028-gd7e7826d has not been validated as the current bundled default for this Clawed build."
       }
     });
     const gameAdapter = new ClawedGameAdapter();
@@ -160,7 +158,7 @@ describe.runIf(liveResearchEnabled)("live Clawed character framework research", 
       await launchClawedThroughSteam();
       const logText = await waitForLogMarkers(
         logPath,
-        ["[CMMCharacterResearch] done|read-only snapshot complete"],
+        ["[CharacterResearch] done|read-only snapshot complete"],
         120_000
       );
       const summary = parseCharacterResearchSummary(logText);
@@ -265,11 +263,11 @@ function createLiveDiscovery(
 
 async function createCharacterResearchFixture(evidenceRoot: string) {
   return createClawedModFixture(
-    path.join(evidenceRoot, "fixtures", "ClawedCharacterResearch.clawedmod"),
+    path.join(evidenceRoot, "fixtures", "CharacterResearch.clawedmod"),
     {
       manifest: {
-        id: "ClawedCharacterResearch",
-        name: "Clawed Character Research",
+        id: "CharacterResearch",
+        name: "Character Research",
         version: timestampForVersion(),
         author: "Clawed Mod Manager",
         description: "Read-only UE4SS object discovery for character framework research.",
@@ -282,7 +280,7 @@ async function createCharacterResearchFixture(evidenceRoot: string) {
 
 function characterResearchLua(): string {
   return [
-    'local marker = "[CMMCharacterResearch] "',
+    'local marker = "[CharacterResearch] "',
     "local function log(event, value)",
     "    print(marker .. event .. \"|\" .. tostring(value))",
     "end",
@@ -401,7 +399,7 @@ function parseCharacterResearchSummary(logText: string): CharacterResearchSummar
   let objectScanTotal = 0;
 
   const markerPattern =
-    /\[Lua\] \[CMMCharacterResearch\] ([\s\S]*?)(?=\[\d{4}-\d{2}-\d{2} |\r?\n|$)/g;
+    /\[Lua\] \[CharacterResearch\] ([\s\S]*?)(?=\[\d{4}-\d{2}-\d{2} |\r?\n|$)/g;
   for (const match of logText.matchAll(markerPattern)) {
     const payload = match[1];
     const [event, ...fields] = payload.split("|");
@@ -450,7 +448,7 @@ async function launchClawedThroughSteam(): Promise<void> {
 async function requestClawedClose(): Promise<void> {
   await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' })",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' })",
       "foreach ($process in $processes) { [void]$process.CloseMainWindow() }",
       "$processes.Count"
     ].join("; ")
@@ -475,7 +473,7 @@ async function waitForNoClawedProcesses(timeoutMs: number): Promise<ProcessInfo[
 async function getClawedProcesses(): Promise<ProcessInfo[]> {
   const output = await runPowerShell(
     [
-      "$processes = @(Get-Process | Where-Object { $_.ProcessName -like '*Clawed*' } | Select-Object Id, ProcessName, MainWindowTitle)",
+      "$processes = @(Get-Process | Where-Object { $_.ProcessName -eq 'Clawed-Win64-Shipping' } | Select-Object Id, ProcessName, MainWindowTitle)",
       "if ($processes.Count -eq 0) { '[]' } else { $processes | ConvertTo-Json -Compress }"
     ].join("; ")
   );
@@ -503,7 +501,7 @@ async function waitForLogMarkers(
   }
 
   throw new Error(
-    `Timed out waiting for CMM character research markers in ${logPath}. Last log length: ${lastText.length}.`
+    `Timed out waiting for character research markers in ${logPath}. Last log length: ${lastText.length}.`
   );
 }
 

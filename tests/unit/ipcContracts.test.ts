@@ -2,12 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   AppSettingsSchema,
+  CreatorMappingsDumpProgressSchema,
+  CreatorMappingsDumpResultSchema,
   CreatorMeshExportDialogRequestSchema,
   ExternalModInspectionResultSchema,
+  ImportModPackageRequestSchema,
+  ImportModPackageResultSchema,
+  LaunchCommandResultSchema,
   LaunchCommandRequestSchema,
   PlaySnapshotSchema,
+  RecordUe4ssRuntimeValidationRequestSchema,
   RendererErrorReportRequestSchema,
-  SetAutoUpdatePackagedRuntimeRequestSchema
+  SetAutoValidatePackagedRuntimeRequestSchema,
+  SetAutoUpdatePackagedRuntimeRequestSchema,
+  ValidatePackagedRuntimeResultSchema
 } from "../../src/shared/contracts/app";
 
 describe("IPC contracts", () => {
@@ -21,6 +29,28 @@ describe("IPC contracts", () => {
     expect(LaunchCommandRequestSchema.parse({ kind: "restartGame" })).toEqual({
       kind: "restartGame"
     });
+    expect(
+      LaunchCommandRequestSchema.parse({
+        kind: "launchModded",
+        runtimeValidationConfirmed: true,
+        alwaysValidateRuntime: true
+      })
+    ).toEqual({
+      kind: "launchModded",
+      runtimeValidationConfirmed: true,
+      alwaysValidateRuntime: true
+    });
+    expect(
+      LaunchCommandResultSchema.parse({
+        kind: "launchModded",
+        launchMode: "MODDED",
+        status: "blocked",
+        title: "Runtime validation failed",
+        message: "Validation did not complete.",
+        canOpenRuntimeValidationFlow: true,
+        occurredAt: new Date().toISOString()
+      })
+    ).toMatchObject({ canOpenRuntimeValidationFlow: true });
   });
 
   it("rejects unknown launch commands", () => {
@@ -32,11 +62,58 @@ describe("IPC contracts", () => {
   it("defaults runtime auto update settings for legacy settings", () => {
     expect(AppSettingsSchema.parse({ manualGameDirectory: null })).toEqual({
       manualGameDirectory: null,
-      autoUpdatePackagedRuntime: true
+      autoUpdatePackagedRuntime: true,
+      autoValidatePackagedRuntime: false
     });
     expect(
       SetAutoUpdatePackagedRuntimeRequestSchema.parse({ enabled: false })
     ).toEqual({ enabled: false });
+    expect(
+      SetAutoValidatePackagedRuntimeRequestSchema.parse({ enabled: false })
+    ).toEqual({ enabled: false });
+  });
+
+  it("requires scoped runtime validation evidence", () => {
+    expect(
+      RecordUe4ssRuntimeValidationRequestSchema.parse({
+        status: "VALIDATED",
+        steamBuildId: "24742251",
+        fingerprintSha256: null,
+        evidencePath: "C:\\CMM\\validation",
+        markerModId: "CMMUserRuntimeValidation"
+      })
+    ).toMatchObject({
+      status: "VALIDATED",
+      steamBuildId: "24742251"
+    });
+    expect(() =>
+      RecordUe4ssRuntimeValidationRequestSchema.parse({
+        status: "VALIDATED",
+        steamBuildId: null,
+        fingerprintSha256: null,
+        evidencePath: null,
+        markerModId: "CMMUserRuntimeValidation"
+      })
+    ).toThrow();
+  });
+
+  it("validates packaged runtime validation results", () => {
+    expect(
+      ValidatePackagedRuntimeResultSchema.parse({
+        status: "validated",
+        evidencePath: "C:\\CMM\\logs\\runtime-validation\\run",
+        recording: null,
+        problems: []
+      })
+    ).toMatchObject({ status: "validated" });
+    expect(
+      ValidatePackagedRuntimeResultSchema.parse({
+        status: "cancelled",
+        evidencePath: "C:\\CMM\\logs\\runtime-validation\\cancelled",
+        recording: null,
+        problems: []
+      })
+    ).toMatchObject({ status: "cancelled" });
   });
 
   it("validates renderer error diagnostics without accepting large payloads", () => {
@@ -76,6 +153,30 @@ describe("IPC contracts", () => {
     expect(parsed.format).toBe("rawPak");
   });
 
+  it("validates identity replacement import requests and results", () => {
+    expect(
+      ImportModPackageRequestSchema.parse({
+        packagePath: "C:\\Mods\\Renamed.clawedmod",
+        replacement: {
+          action: "replaceMatchingIdentity",
+          packageIdentityId: "cmm:generated:Renamed"
+        }
+      })
+    ).toMatchObject({
+      replacement: { packageIdentityId: "cmm:generated:Renamed" }
+    });
+
+    expect(
+      ImportModPackageResultSchema.parse({
+        status: "needsReplacementConfirmation",
+        mod: null,
+        packageIdentityId: "cmm:generated:Renamed",
+        replacementCandidates: [],
+        problems: []
+      })
+    ).toMatchObject({ status: "needsReplacementConfirmation" });
+  });
+
   it("keeps creator mesh export dialog requests narrow", () => {
     expect(
       CreatorMeshExportDialogRequestSchema.parse({
@@ -92,6 +193,30 @@ describe("IPC contracts", () => {
     ).toThrow();
   });
 
+  it("validates creator mappings dump results", () => {
+    expect(
+      CreatorMappingsDumpResultSchema.parse({
+        status: "generated",
+        mappingsPath: "C:\\Clawed\\Mappings.usmap",
+        evidencePath: "C:\\CMM\\logs\\unreal-mappings\\run",
+        problems: []
+      })
+    ).toMatchObject({ status: "generated" });
+  });
+
+  it("validates creator mappings progress updates", () => {
+    expect(
+      CreatorMappingsDumpProgressSchema.parse({
+        stage: "waitingForMappings",
+        status: "running",
+        message: "Waiting for UE4SS to write Mappings.usmap.",
+        detail: "Timeout: 180 seconds.",
+        mappingsPath: null,
+        evidencePath: "C:\\CMM\\logs\\unreal-mappings\\run"
+      })
+    ).toMatchObject({ stage: "waitingForMappings", status: "running" });
+  });
+
   it("validates the play page snapshot shape", () => {
     const parsed = PlaySnapshotSchema.parse({
       activeProfile: { id: "default", name: "Default" },
@@ -100,6 +225,11 @@ describe("IPC contracts", () => {
       enabledMods: 0,
       profileValidity: "valid",
       deploymentState: "notDeployed",
+      runtime: {
+        ue4ss: null,
+        status: "missing",
+        problems: []
+      },
       conflicts: { count: 0, severity: "none" },
       discovery: {
         appId: "3394840",
