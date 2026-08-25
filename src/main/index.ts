@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 
 import { registerIpcHandlers } from "./ipc/registerIpcHandlers";
+import { CreatorViewportWindowService } from "./services/creatorViewportWindowService";
 import {
   registerAppCrashDiagnostics,
   registerWindowCrashDiagnostics,
@@ -11,8 +12,11 @@ import {
 import { JsonlLifecycleLogger } from "./services/lifecycleLogger";
 import { createMainServices } from "./services/serviceRegistry";
 import { getAllowedUserDataOverride } from "./services/storageService";
+import type { CreatorViewportWindowEvent } from "../shared/contracts/app";
+import { IPC_CHANNELS } from "../shared/contracts/ipc";
 
 const rendererDevServerUrl = process.env.VITE_DEV_SERVER_URL;
+const preloadPath = path.join(__dirname, "../preload/index.cjs");
 
 applyUserDataOverride();
 const crashDumpsDirectory = startLocalCrashReporter();
@@ -33,7 +37,7 @@ function createMainWindow(logger: JsonlLifecycleLogger): BrowserWindow {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
-      preload: path.join(__dirname, "../preload/index.cjs"),
+      preload: preloadPath,
       sandbox: true
     }
   });
@@ -42,19 +46,86 @@ function createMainWindow(logger: JsonlLifecycleLogger): BrowserWindow {
     window.show();
   });
 
+  denyWindowOpen(window);
+  registerWindowCrashDiagnostics(window, logger);
+
+  void loadRenderer(window);
+
+  return window;
+}
+
+function createCreatorViewportWindowService(
+  logger: JsonlLifecycleLogger
+): CreatorViewportWindowService {
+  return new CreatorViewportWindowService({
+    createWindow: () => {
+      const window = new BrowserWindow({
+        width: 1080,
+        height: 780,
+        minWidth: 760,
+        minHeight: 560,
+        resizable: true,
+        maximizable: true,
+        fullscreenable: true,
+        title: "Clawed Model Viewport",
+        autoHideMenuBar: true,
+        backgroundColor: "#111318",
+        show: false,
+        webPreferences: {
+          contextIsolation: true,
+          nodeIntegration: false,
+          preload: preloadPath,
+          sandbox: true
+        }
+      });
+      window.once("ready-to-show", () => {
+        window.show();
+      });
+      denyWindowOpen(window);
+      registerWindowCrashDiagnostics(window, logger);
+      return {
+        close: () => window.close(),
+        focus: () => window.focus(),
+        isDestroyed: () => window.isDestroyed(),
+        load: () => loadRenderer(window, { creatorViewport: "popout" }),
+        onClosed: (callback) => {
+          window.once("closed", callback);
+        }
+      };
+    },
+    emitEvent: (event: CreatorViewportWindowEvent) => {
+      BrowserWindow.getAllWindows().forEach((window) => {
+        if (!window.isDestroyed()) {
+          window.webContents.send(IPC_CHANNELS.creatorViewportWindowEvent, event);
+        }
+      });
+    }
+  });
+}
+
+function denyWindowOpen(window: BrowserWindow): void {
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
     return { action: "deny" };
   });
-  registerWindowCrashDiagnostics(window, logger);
+}
 
+async function loadRenderer(
+  window: BrowserWindow,
+  query: Record<string, string> = {}
+): Promise<void> {
   if (rendererDevServerUrl) {
-    void window.loadURL(rendererDevServerUrl);
-  } else {
-    void window.loadFile(path.join(__dirname, "../renderer/index.html"));
+    const url = new URL(rendererDevServerUrl);
+    Object.entries(query).forEach(([key, value]) => {
+      url.searchParams.set(key, value);
+    });
+    await window.loadURL(url.toString());
+    return;
   }
 
-  return window;
+  await window.loadFile(path.join(__dirname, "../renderer/index.html"), {
+    query
+  });
 }
 
 function applyUserDataOverride(): void {
@@ -77,7 +148,9 @@ app.whenReady().then(async () => {
   if ((await services.settingsService.getSettings()).autoUpdatePackagedRuntime) {
     await services.runtimeManager.ensureBundledUe4ssRuntime();
   }
-  registerIpcHandlers(services);
+  const creatorViewportWindowService =
+    createCreatorViewportWindowService(logger);
+  registerIpcHandlers({ ...services, creatorViewportWindowService });
   createMainWindow(logger);
 
   app.on("activate", () => {

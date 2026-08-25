@@ -26,6 +26,9 @@ import {
   CreatorModelPreviewResultSchema,
   CreatorPreviewLookupRequestSchema,
   CreatorPreviewLookupResultSchema,
+  CreatorViewportTextureCandidatesRequestSchema,
+  CreatorViewportTextureCandidatesResultSchema,
+  CreatorViewportSessionSchema,
   DiagnosticReportSchema,
   DeploymentOperationResultSchema,
   DeploymentSnapshotSchema,
@@ -101,6 +104,10 @@ import type {
   CreatorModelPreviewResult,
   CreatorPreviewLookupRequest,
   CreatorPreviewLookupResult,
+  CreatorViewportTextureCandidatesRequest,
+  CreatorViewportTextureCandidatesResult,
+  CreatorViewportSession,
+  CreatorViewportWindowEvent,
   DiagnosticReport,
   DeploymentOperationResult,
   DeploymentSnapshot,
@@ -210,6 +217,13 @@ export const IPC_CHANNELS = {
   getCreatorExportPlan: "cmm:creatorAssets:getExportPlan",
   chooseAndExportCreatorMesh: "cmm:creatorAssets:chooseAndExportMesh",
   getCreatorAssetReport: "cmm:creatorAssets:getReport",
+  getCreatorViewportTextureCandidates:
+    "cmm:creatorAssets:getViewportTextureCandidates",
+  openCreatorViewportWindow: "cmm:creatorViewport:openWindow",
+  getCreatorViewportSession: "cmm:creatorViewport:getSession",
+  updateCreatorViewportSession: "cmm:creatorViewport:updateSession",
+  returnCreatorViewportWindow: "cmm:creatorViewport:returnWindow",
+  creatorViewportWindowEvent: "cmm:creatorViewport:event",
   restoreCmmChanges: "cmm:backup:restoreCmmChanges",
   getStorageLayout: "cmm:storage:getLayout",
   getDiagnosticsSummary: "cmm:diagnostics:getSummary",
@@ -523,6 +537,34 @@ export const ipcContracts = {
     requestSchema: CreatorAssetReportRequestSchema,
     responseSchema: CreatorAssetReportResultSchema
   } satisfies IpcContract<CreatorAssetReportRequest, CreatorAssetReportResult>,
+  getCreatorViewportTextureCandidates: {
+    channel: IPC_CHANNELS.getCreatorViewportTextureCandidates,
+    requestSchema: CreatorViewportTextureCandidatesRequestSchema,
+    responseSchema: CreatorViewportTextureCandidatesResultSchema
+  } satisfies IpcContract<
+    CreatorViewportTextureCandidatesRequest,
+    CreatorViewportTextureCandidatesResult
+  >,
+  openCreatorViewportWindow: {
+    channel: IPC_CHANNELS.openCreatorViewportWindow,
+    requestSchema: CreatorViewportSessionSchema,
+    responseSchema: CreatorViewportSessionSchema
+  } satisfies IpcContract<CreatorViewportSession, CreatorViewportSession>,
+  getCreatorViewportSession: {
+    channel: IPC_CHANNELS.getCreatorViewportSession,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: CreatorViewportSessionSchema
+  } satisfies IpcContract<EmptyRequest, CreatorViewportSession>,
+  updateCreatorViewportSession: {
+    channel: IPC_CHANNELS.updateCreatorViewportSession,
+    requestSchema: CreatorViewportSessionSchema,
+    responseSchema: CreatorViewportSessionSchema
+  } satisfies IpcContract<CreatorViewportSession, CreatorViewportSession>,
+  returnCreatorViewportWindow: {
+    channel: IPC_CHANNELS.returnCreatorViewportWindow,
+    requestSchema: CreatorViewportSessionSchema,
+    responseSchema: CreatorViewportSessionSchema
+  } satisfies IpcContract<CreatorViewportSession, CreatorViewportSession>,
   restoreCmmChanges: {
     channel: IPC_CHANNELS.restoreCmmChanges,
     requestSchema: EmptyRequestSchema,
@@ -665,6 +707,22 @@ export interface CmmApi {
   getCreatorAssetReport(
     request: CreatorAssetReportRequest
   ): Promise<CreatorAssetReportResult>;
+  getCreatorViewportTextureCandidates(
+    request: CreatorViewportTextureCandidatesRequest
+  ): Promise<CreatorViewportTextureCandidatesResult>;
+  openCreatorViewportWindow(
+    request: CreatorViewportSession
+  ): Promise<CreatorViewportSession>;
+  getCreatorViewportSession(): Promise<CreatorViewportSession>;
+  updateCreatorViewportSession(
+    request: CreatorViewportSession
+  ): Promise<CreatorViewportSession>;
+  returnCreatorViewportWindow(
+    request: CreatorViewportSession
+  ): Promise<CreatorViewportSession>;
+  onCreatorViewportWindowEvent(
+    callback: (event: CreatorViewportWindowEvent) => void
+  ): () => void;
   restoreCmmChanges(): Promise<BackupRestoreResult>;
   getStorageLayout(): Promise<AppStorageLayout>;
   getDiagnosticsSummary(): Promise<DiagnosticsSummary>;

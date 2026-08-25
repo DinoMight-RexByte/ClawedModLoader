@@ -4,6 +4,7 @@ import { AppShell } from "./components/AppShell";
 import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
 import { useTheme } from "./hooks/useTheme";
 import { CreatorAssetsPage } from "./pages/CreatorAssetsPage";
+import { CreatorViewportWindowPage } from "./pages/CreatorViewportWindowPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
 import { LoadOrderPage } from "./pages/LoadOrderPage";
 import { ModsPage } from "./pages/ModsPage";
@@ -15,8 +16,11 @@ import { useAppStore } from "./stores/appStore";
 
 export function App(): ReactElement {
   useTheme();
-
   const activePage = useAppStore((state) => state.activePage);
+
+  if (isCreatorViewportPopout()) {
+    return <CreatorViewportWindowPage />;
+  }
 
   return (
     <AppShell>
@@ -30,5 +34,12 @@ export function App(): ReactElement {
       {activePage === "settings" ? <SettingsPage /> : null}
       <FirstRunOnboarding />
     </AppShell>
+  );
+}
+
+function isCreatorViewportPopout(): boolean {
+  return (
+    new URLSearchParams(window.location.search).get("creatorViewport") ===
+    "popout"
   );
 }

@@ -15,6 +15,7 @@ describe("release build config", () => {
       "package.json",
       "assets/branding",
       "assets/runtime",
+      "assets/unreal-decoder",
       ".codex/clawed-game-file-map/20260814-current"
     ]);
 
@@ -34,6 +35,10 @@ describe("release build config", () => {
       expect(packagedInputs.join("\n")).not.toContain(blocked);
     }
 
+    expect(build.extraResources).toContainEqual({
+      from: "assets/unreal-decoder",
+      to: "unreal-decoder"
+    });
     expect(build.extraResources).toContainEqual({
       from: ".codex/clawed-game-file-map/20260814-current",
       to: "clawed-game-file-map/20260814-current"

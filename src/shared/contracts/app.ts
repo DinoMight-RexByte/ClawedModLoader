@@ -306,6 +306,7 @@ export type CreatorMeshExportFormat = z.infer<
 export const CreatorModelPreviewRoleSchema = z.enum([
   "staticMesh",
   "skeletalMesh",
+  "skeleton",
   "unknown"
 ]);
 export type CreatorModelPreviewRole = z.infer<
@@ -433,6 +434,61 @@ export type CreatorAssetDependency = z.infer<
   typeof CreatorAssetDependencySchema
 >;
 
+export const CreatorViewportTextureLayerSchema = z.enum([
+  "baseColor",
+  "normal",
+  "lightMap",
+  "maskOrm",
+  "emissive",
+  "unknown"
+]);
+export type CreatorViewportTextureLayer = z.infer<
+  typeof CreatorViewportTextureLayerSchema
+>;
+
+export const CreatorTextureBindingSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    meshAssetId: z.string().min(1).optional(),
+    meshPackagePath: z.string().min(1).optional(),
+    meshObjectPath: z.string().min(1).optional(),
+    meshVirtualPath: z.string().min(1).optional(),
+    materialSlotName: z.string().min(1).nullable().default(null),
+    layer: CreatorViewportTextureLayerSchema,
+    textureAssetId: z.string().min(1).optional(),
+    texturePackagePath: z.string().min(1).optional(),
+    textureObjectPath: z.string().min(1).optional(),
+    textureVirtualPath: z.string().min(1).optional(),
+    texturePreviewId: z.string().min(1).optional(),
+    evidence: z
+      .enum(["creatorMetadata", "decodedMaterialDependency", "activeConflict"])
+      .default("creatorMetadata")
+  })
+  .strict()
+  .refine(
+    (binding) =>
+      Boolean(
+        binding.meshAssetId ??
+          binding.meshPackagePath ??
+          binding.meshObjectPath ??
+          binding.meshVirtualPath
+      ),
+    "Texture bindings must identify a mesh asset or mesh path."
+  )
+  .refine(
+    (binding) =>
+      Boolean(
+        binding.textureAssetId ??
+          binding.texturePackagePath ??
+          binding.textureObjectPath ??
+          binding.textureVirtualPath
+      ),
+    "Texture bindings must identify a Texture2D asset or texture path."
+  );
+export type CreatorTextureBinding = z.infer<
+  typeof CreatorTextureBindingSchema
+>;
+
 export const CreatorExportOutputSchema = z.enum([
   "clawedmod",
   "clawedpack",
@@ -480,6 +536,7 @@ export const CreatorAssetMetadataV1Schema = z
     previewAssets: z.array(CreatorPreviewAssetSchema),
     importProvenance: z.array(CreatorImportProvenanceSchema),
     assetDependencies: z.array(CreatorAssetDependencySchema),
+    textureBindings: z.array(CreatorTextureBindingSchema).default([]),
     exportEligibility: CreatorExportEligibilitySchema
   })
   .strict();
@@ -615,6 +672,7 @@ export const CreatorAssetIndexEntrySchema = z
     activeProfileEnabled: z.boolean(),
     activeProfileOrder: z.number().int().positive().nullable(),
     assetClass: z.string().min(1).nullable(),
+    viewportCapable: z.boolean().default(false),
     packagePath: z.string().min(1).nullable(),
     objectPath: z.string().min(1).nullable(),
     virtualPath: z.string().min(1).nullable().default(null),
@@ -633,6 +691,168 @@ export const CreatorAssetIndexEntrySchema = z
   .strict();
 export type CreatorAssetIndexEntry = z.infer<
   typeof CreatorAssetIndexEntrySchema
+>;
+
+export const CreatorViewportWindowModeSchema = z.enum([
+  "embedded",
+  "poppedOut"
+]);
+export type CreatorViewportWindowMode = z.infer<
+  typeof CreatorViewportWindowModeSchema
+>;
+
+export const CreatorViewportLightSettingsSchema = z
+  .object({
+    bottomLeft: z.boolean(),
+    bottomRight: z.boolean(),
+    even: z.boolean(),
+    topLeft: z.boolean(),
+    topRight: z.boolean()
+  })
+  .strict();
+export type CreatorViewportLightSettings = z.infer<
+  typeof CreatorViewportLightSettingsSchema
+>;
+
+export const CreatorViewportCameraVectorSchema = z.tuple([
+  z.number(),
+  z.number(),
+  z.number()
+]);
+export type CreatorViewportCameraVector = z.infer<
+  typeof CreatorViewportCameraVectorSchema
+>;
+
+export const CreatorViewportCameraStateSchema = z
+  .object({
+    distance: z.number().nonnegative(),
+    position: CreatorViewportCameraVectorSchema,
+    target: CreatorViewportCameraVectorSchema
+  })
+  .strict();
+export type CreatorViewportCameraState = z.infer<
+  typeof CreatorViewportCameraStateSchema
+>;
+
+export const CreatorViewportTextureEvidenceSchema = z
+  .object({
+    detail: z.string().min(1).nullable().default(null),
+    relation: z.string().min(1).nullable().default(null),
+    source: z.enum([
+      "creatorMetadata",
+      "decodedMaterialDependency",
+      "activeConflict"
+    ])
+  })
+  .strict();
+export type CreatorViewportTextureEvidence = z.infer<
+  typeof CreatorViewportTextureEvidenceSchema
+>;
+
+export const CreatorViewportTextureCandidateSchema = z
+  .object({
+    dataUrl: z.string().min(1).nullable(),
+    evidence: z.array(CreatorViewportTextureEvidenceSchema).min(1),
+    id: z.string().min(1),
+    layer: CreatorViewportTextureLayerSchema,
+    materialSlotName: z.string().min(1).nullable(),
+    meshAssetId: z.string().min(1),
+    meshLabel: z.string().min(1),
+    mimeType: z.string().min(1).nullable(),
+    textureAssetId: z.string().min(1),
+    textureLabel: z.string().min(1),
+    textureObjectPath: z.string().min(1).nullable(),
+    texturePackagePath: z.string().min(1).nullable(),
+    texturePreviewId: z.string().min(1).nullable()
+  })
+  .strict();
+export type CreatorViewportTextureCandidate = z.infer<
+  typeof CreatorViewportTextureCandidateSchema
+>;
+
+export const CreatorViewportTextureHintSchema = z
+  .object({
+    dependencyPaths: z.array(z.string().min(1)).max(80).default([]),
+    materialPath: z.string().min(1).nullable().default(null),
+    materialSlotName: z.string().min(1).nullable().default(null),
+    meshAssetId: z.string().min(1)
+  })
+  .strict();
+export type CreatorViewportTextureHint = z.infer<
+  typeof CreatorViewportTextureHintSchema
+>;
+
+export const CreatorViewportTextureCandidatesRequestSchema = z
+  .object({
+    textureHints: z.array(CreatorViewportTextureHintSchema).max(1000).default([]),
+    visibleAssetIds: z.array(z.string().min(1)).max(200)
+  })
+  .strict();
+export type CreatorViewportTextureCandidatesRequest = z.infer<
+  typeof CreatorViewportTextureCandidatesRequestSchema
+>;
+
+export const CreatorViewportTextureCandidatesResultSchema = z
+  .object({
+    candidates: z.array(CreatorViewportTextureCandidateSchema),
+    generatedAt: z.string(),
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type CreatorViewportTextureCandidatesResult = z.infer<
+  typeof CreatorViewportTextureCandidatesResultSchema
+>;
+
+export const CreatorViewportTextureSelectionSchema = z
+  .object({
+    candidateId: z.string().min(1)
+  })
+  .strict();
+export type CreatorViewportTextureSelection = z.infer<
+  typeof CreatorViewportTextureSelectionSchema
+>;
+
+export const CreatorViewportSessionItemSchema = z
+  .object({
+    assetClass: z.string().min(1).nullable(),
+    assetId: z.string().min(1),
+    label: z.string().min(1),
+    previewId: z.string().min(1).nullable(),
+    selected: z.boolean(),
+    source: CreatorRegistrySourceSchema,
+    visible: z.boolean()
+  })
+  .strict();
+export type CreatorViewportSessionItem = z.infer<
+  typeof CreatorViewportSessionItemSchema
+>;
+
+export const CreatorViewportSessionSchema = z
+  .object({
+    cameraState: CreatorViewportCameraStateSchema.nullable(),
+    items: z.array(CreatorViewportSessionItemSchema).max(200),
+    lightSettings: CreatorViewportLightSettingsSchema,
+    selectedAssetId: z.string().min(1).nullable(),
+    showSkeletons: z.boolean(),
+    stopRotation: z.boolean(),
+    textureSelections: z
+      .array(CreatorViewportTextureSelectionSchema)
+      .default([]),
+    windowMode: CreatorViewportWindowModeSchema
+  })
+  .strict();
+export type CreatorViewportSession = z.infer<
+  typeof CreatorViewportSessionSchema
+>;
+
+export const CreatorViewportWindowEventSchema = z
+  .object({
+    session: CreatorViewportSessionSchema,
+    type: z.enum(["poppedOut", "returned"])
+  })
+  .strict();
+export type CreatorViewportWindowEvent = z.infer<
+  typeof CreatorViewportWindowEventSchema
 >;
 
 export const CreatorAssetChecksumSchema = z
@@ -799,6 +1019,7 @@ export const CreatorAssetTreeNodeSchema = z
     hasChildren: z.boolean(),
     childCount: z.number().int().nonnegative(),
     assetClass: z.string().min(1).nullable().default(null),
+    viewportCapable: z.boolean().default(false),
     packageName: z.string().min(1).nullable().default(null),
     validationState: CreatorValidationStateSchema.nullable().default(null),
     conflictState: CreatorAssetConflictStateSchema.nullable().default(null),

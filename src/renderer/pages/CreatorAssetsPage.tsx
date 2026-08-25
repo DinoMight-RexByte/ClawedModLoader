@@ -7,6 +7,7 @@ import {
   Clipboard,
   Database,
   Download,
+  Eye,
   File,
   FileJson,
   FileSearch,
@@ -14,6 +15,7 @@ import {
   FolderOpen,
   Network,
   PackageSearch,
+  Plus,
   RefreshCw,
   ShieldCheck
 } from "lucide-react";
@@ -76,10 +78,19 @@ export function CreatorAssetsPage(): ReactElement {
     detail,
     modelPreview,
     modelBusy,
-    modelError,
     exportPlan,
     meshExport,
     report,
+    viewportBundle,
+    viewportTextureCandidates,
+    viewportTextureSelections,
+    viewportTextureError,
+    selectedViewportAssetId,
+    viewportCameraState,
+    viewportWindowMode,
+    showSkeletons,
+    stopRotation,
+    viewportLightSettings,
     filters,
     selectedAssetId,
     busy,
@@ -88,6 +99,20 @@ export function CreatorAssetsPage(): ReactElement {
     toggleTreeNode,
     planExport,
     exportMesh,
+    addToViewport,
+    addAssetToViewport,
+    clearViewport,
+    openViewportWindow,
+    returnViewportWindow,
+    setViewportItemVisibility,
+    removeViewportItem,
+    selectViewportItem,
+    setShowSkeletons,
+    setStopRotation,
+    setViewportLightSettings,
+    setViewportCameraState,
+    setViewportTextureSelected,
+    planVisibleExport,
     copyReport,
     setFilters
   } = useCreatorAssets();
@@ -256,6 +281,7 @@ export function CreatorAssetsPage(): ReactElement {
                     key={node.id}
                     node={node}
                     nodesByParentId={treeNodesByParentId}
+                    onAddToViewport={addAssetToViewport}
                     onToggle={(nextNode) => void toggleTreeNode(nextNode)}
                     selectedAssetId={selectedAssetId}
                   />
@@ -314,9 +340,33 @@ export function CreatorAssetsPage(): ReactElement {
               </dl>
 
               <CreatorModelViewport
-                busy={modelBusy}
-                error={modelError}
-                preview={modelPreview}
+                busy={false}
+                cameraState={viewportCameraState}
+                error={null}
+                items={viewportBundle}
+                lightSettings={viewportLightSettings}
+                onClear={clearViewport}
+                onCameraStateChange={setViewportCameraState}
+                onLightSettingsChange={setViewportLightSettings}
+                onPopOut={() => void openViewportWindow()}
+                onRemoveItem={removeViewportItem}
+                onReturnToMain={() => void returnViewportWindow("service")}
+                onSelectItem={selectViewportItem}
+                onShowSkeletonsChange={setShowSkeletons}
+                onStopRotationChange={setStopRotation}
+                onTextureSelectionChange={setViewportTextureSelected}
+                onToggleItemVisibility={setViewportItemVisibility}
+                selectedAssetId={selectedViewportAssetId}
+                showSkeletons={showSkeletons}
+                stopRotation={stopRotation}
+                textureCandidates={viewportTextureCandidates}
+                textureError={viewportTextureError}
+                textureSelections={viewportTextureSelections}
+                viewportMode={
+                  viewportWindowMode === "poppedOut"
+                    ? "embeddedHidden"
+                    : "embedded"
+                }
               />
 
               <div className="grid gap-3">
@@ -441,6 +491,26 @@ export function CreatorAssetsPage(): ReactElement {
               <div className="grid gap-3">
                 <h3 className="font-semibold">Safe Actions</h3>
                 <div className="flex flex-wrap gap-2">
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
+                    disabled={busy || modelBusy || !selected.viewportCapable}
+                    onClick={() => void addToViewport(selected, modelPreview)}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" size={16} />
+                    Add to Viewport
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
+                    disabled={
+                      busy || !viewportBundle.some((item) => item.visible)
+                    }
+                    onClick={() => void planVisibleExport()}
+                    type="button"
+                  >
+                    <Download aria-hidden="true" size={16} />
+                    Export Visible Set
+                  </button>
                   <button
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
                     disabled={busy}
@@ -594,6 +664,7 @@ function TreeNodeRow({
   expandedNodeIds,
   node,
   nodesByParentId,
+  onAddToViewport,
   onToggle,
   selectedAssetId
 }: {
@@ -602,6 +673,7 @@ function TreeNodeRow({
   expandedNodeIds: string[];
   node: CreatorAssetTreeNode;
   nodesByParentId: Record<string, CreatorAssetTreeNode[]>;
+  onAddToViewport(assetId: string): Promise<void>;
   onToggle(node: CreatorAssetTreeNode): void;
   selectedAssetId: string | null;
 }): ReactElement {
@@ -612,47 +684,64 @@ function TreeNodeRow({
 
   return (
     <div>
-      <button
-        aria-expanded={node.hasChildren ? expanded : undefined}
-        aria-pressed={node.kind === "asset" ? selected : undefined}
+      <div
         className={`grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-2 text-left text-sm ${
           selected
             ? "bg-app-accent/15 text-app-text"
             : "text-app-muted hover:bg-app-surfaceRaised hover:text-app-text"
         }`}
-        onClick={() => onToggle(node)}
         style={{ paddingLeft: `${8 + depth * 16}px` }}
-        type="button"
       >
-        <span className="flex items-center gap-1">
-          {node.hasChildren ? (
-            expanded ? (
-              <ChevronDown aria-hidden="true" size={16} />
+        <button
+          aria-expanded={node.hasChildren ? expanded : undefined}
+          aria-pressed={node.kind === "asset" ? selected : undefined}
+          className="col-span-2 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+          onClick={() => onToggle(node)}
+          type="button"
+        >
+          <span className="flex items-center gap-1">
+            {node.hasChildren ? (
+              expanded ? (
+                <ChevronDown aria-hidden="true" size={16} />
+              ) : (
+                <ChevronRight aria-hidden="true" size={16} />
+              )
             ) : (
-              <ChevronRight aria-hidden="true" size={16} />
-            )
-          ) : (
-            <span className="w-4" />
-          )}
-          <TreeIcon expanded={expanded} node={node} />
-        </span>
-        <span className="min-w-0">
-          <span className="block truncate font-medium">{node.label}</span>
-          {node.kind === "asset" ? (
-            <span className="mt-0.5 block truncate font-mono text-[11px] text-app-subtle">
-              {node.path}
-            </span>
-          ) : null}
-        </span>
+              <span className="w-4" />
+            )}
+            <TreeIcon expanded={expanded} node={node} />
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate font-medium">{node.label}</span>
+            {node.kind === "asset" ? (
+              <span className="mt-0.5 block truncate font-mono text-[11px] text-app-subtle">
+                {node.path}
+              </span>
+            ) : null}
+          </span>
+        </button>
         <span className="flex shrink-0 items-center gap-2 text-xs text-app-subtle">
           {busy ? <span>Loading</span> : null}
           {node.kind === "asset" ? (
-            <span>{nodeStatusLabel(node)}</span>
+            <>
+              {node.viewportCapable && node.assetId ? (
+                <button
+                  aria-label={`Add ${node.label} to viewport`}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-app-border text-app-muted hover:bg-app-surface hover:text-app-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+                  onClick={() => void onAddToViewport(node.assetId ?? "")}
+                  title="Add to viewport"
+                  type="button"
+                >
+                  <Eye aria-hidden="true" size={15} />
+                </button>
+              ) : null}
+              <span>{nodeStatusLabel(node)}</span>
+            </>
           ) : (
             <span>{formatNumber(node.childCount)}</span>
           )}
         </span>
-      </button>
+      </div>
       {expanded && children.length ? (
         <div className="grid gap-1">
           {children.map((child) => (
@@ -663,6 +752,7 @@ function TreeNodeRow({
               key={child.id}
               node={child}
               nodesByParentId={nodesByParentId}
+              onAddToViewport={onAddToViewport}
               onToggle={onToggle}
               selectedAssetId={selectedAssetId}
             />

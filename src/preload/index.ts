@@ -1,10 +1,17 @@
-import { contextBridge, ipcRenderer, webUtils } from "electron";
+import {
+  contextBridge,
+  ipcRenderer,
+  webUtils,
+  type IpcRendererEvent
+} from "electron";
 
 import {
+  IPC_CHANNELS,
   ipcContracts,
   type CmmApi,
   type IpcContract
 } from "../shared/contracts/ipc";
+import { CreatorViewportWindowEventSchema } from "../shared/contracts/app";
 
 async function invoke<TRequest, TResponse>(
   contract: IpcContract<TRequest, TResponse>,
@@ -107,6 +114,28 @@ const api: CmmApi = {
     invoke(ipcContracts.chooseAndExportCreatorMesh, request),
   getCreatorAssetReport: (request) =>
     invoke(ipcContracts.getCreatorAssetReport, request),
+  getCreatorViewportTextureCandidates: (request) =>
+    invoke(ipcContracts.getCreatorViewportTextureCandidates, request),
+  openCreatorViewportWindow: (request) =>
+    invoke(ipcContracts.openCreatorViewportWindow, request),
+  getCreatorViewportSession: () =>
+    invoke(ipcContracts.getCreatorViewportSession, {}),
+  updateCreatorViewportSession: (request) =>
+    invoke(ipcContracts.updateCreatorViewportSession, request),
+  returnCreatorViewportWindow: (request) =>
+    invoke(ipcContracts.returnCreatorViewportWindow, request),
+  onCreatorViewportWindowEvent: (callback) => {
+    const listener = (_event: IpcRendererEvent, rawEvent: unknown) => {
+      callback(CreatorViewportWindowEventSchema.parse(rawEvent));
+    };
+    ipcRenderer.on(IPC_CHANNELS.creatorViewportWindowEvent, listener);
+    return () => {
+      ipcRenderer.removeListener(
+        IPC_CHANNELS.creatorViewportWindowEvent,
+        listener
+      );
+    };
+  },
   restoreCmmChanges: () => invoke(ipcContracts.restoreCmmChanges, {}),
   getStorageLayout: () => invoke(ipcContracts.getStorageLayout, {}),
   getDiagnosticsSummary: () => invoke(ipcContracts.getDiagnosticsSummary, {}),
