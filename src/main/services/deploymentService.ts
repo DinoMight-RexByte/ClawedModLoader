@@ -310,10 +310,6 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       ]);
     }
 
-    if (plan.requiresRuntime && runtime.status === "unvalidated") {
-      return blockedResult("runtimeUnvalidated", runtime.problems);
-    }
-
     const transactionId = randomUUID();
     const layout = await this.storageService.getLayout();
     const stagingPath = path.join(

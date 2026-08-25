@@ -346,7 +346,9 @@ describe("runtime manager", () => {
       "UE4SS_BUNDLED_RUNTIME_INCOMPATIBLE"
     );
     expect(otherBuild.status).toBe("unvalidated");
-    expect(otherBuild.problems[0].code).toBe("UE4SS_RUNTIME_UNVALIDATED");
+    expect(otherBuild.problems[0].code).toBe(
+      "UE4SS_BUNDLED_RUNTIME_UNVALIDATED"
+    );
   });
 
   it("lets live packaged runtime validation override scoped metadata", async () => {
