@@ -10,7 +10,10 @@ import {
   CreatorMappingsDumpProgressSchema,
   type ImportModPackageResult
 } from "../../shared/contracts/app";
-import type { CoreServices } from "../../shared/contracts/services";
+import type {
+  CoreServices,
+  CreatorViewportWindowServiceContract
+} from "../../shared/contracts/services";
 
 function toUserSafeError(error: unknown): Error {
   if (error instanceof ZodError) {
@@ -107,7 +110,11 @@ function formatReplacementPromptDetail(result: ImportModPackageResult): string {
   ].join("\n");
 }
 
-export function registerIpcHandlers(services: CoreServices): void {
+type IpcServices = CoreServices & {
+  creatorViewportWindowService: CreatorViewportWindowServiceContract;
+};
+
+export function registerIpcHandlers(services: IpcServices): void {
   registerHandler(ipcContracts.getPlaySnapshot, () =>
     services.diagnosticsService.getPlaySnapshot()
   );
@@ -588,6 +595,26 @@ export function registerIpcHandlers(services: CoreServices): void {
 
   registerHandler(ipcContracts.getCreatorAssetReport, (request) =>
     services.assetRegistryService.getReport(request)
+  );
+
+  registerHandler(ipcContracts.getCreatorViewportTextureCandidates, (request) =>
+    services.assetRegistryService.getViewportTextureCandidates(request)
+  );
+
+  registerHandler(ipcContracts.openCreatorViewportWindow, (request) =>
+    services.creatorViewportWindowService.open(request)
+  );
+
+  registerHandler(ipcContracts.getCreatorViewportSession, () =>
+    services.creatorViewportWindowService.read()
+  );
+
+  registerHandler(ipcContracts.updateCreatorViewportSession, (request) =>
+    services.creatorViewportWindowService.update(request)
+  );
+
+  registerHandler(ipcContracts.returnCreatorViewportWindow, (request) =>
+    services.creatorViewportWindowService.returnToMain(request)
   );
 
   registerHandler(ipcContracts.restoreCmmChanges, async () => {

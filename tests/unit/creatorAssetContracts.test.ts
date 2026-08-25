@@ -14,6 +14,7 @@ import {
   CreatorMeshExportResultSchema,
   CreatorMeshPackageExportResultSchema,
   CreatorModelPreviewResultSchema,
+  CreatorViewportTextureCandidatesResultSchema,
   type CreatorAssetIndexEntry
 } from "../../src/shared/contracts/app";
 import {
@@ -230,6 +231,130 @@ describe("creator asset contracts", () => {
     expect(preview.modelRole).toBe("unknown");
     expect(preview.materialSlots).toEqual([]);
     expect(preview.lods).toEqual([]);
+    expect(creatorAssets.textureBindings).toEqual([]);
+  });
+
+  it("accepts explicit viewport texture bindings", () => {
+    const manifest = ClawedModManifestV1Schema.parse(
+      createFixtureManifest({
+        id: "texture-binding",
+        loader: "pak",
+        creatorAssets: {
+          ...creatorAssets,
+          previewAssets: [
+            ...creatorAssets.previewAssets,
+            {
+              id: "target-base-color",
+              payloadPath: "payload/previews/target-base-color.png",
+              kind: "image",
+              assetClass: "Texture2D",
+              objectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+              source: "generated",
+              format: "unknown",
+              modelRole: "unknown",
+              skeleton: null,
+              physicsAsset: null,
+              materialSlots: [],
+              lods: [],
+              dependencyPaths: []
+            }
+          ],
+          textureBindings: [
+            {
+              id: "target-body-base-color",
+              meshObjectPath: "/Game/UtahRaptor/Meshes/SM_Target.SM_Target",
+              materialSlotName: "Body",
+              layer: "baseColor",
+              textureObjectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+              texturePreviewId: "target-base-color",
+              evidence: "creatorMetadata"
+            }
+          ]
+        }
+      })
+    );
+    const binding = manifest.creatorAssets?.textureBindings[0];
+
+    expect(binding?.layer).toBe("baseColor");
+    expect(binding?.materialSlotName).toBe("Body");
+    expect(binding?.texturePreviewId).toBe("target-base-color");
+  });
+
+  it("accepts viewport texture candidate responses", () => {
+    const result = CreatorViewportTextureCandidatesResultSchema.parse({
+      candidates: [
+        {
+          dataUrl: "data:image/png;base64,AA==",
+          evidence: [
+            {
+              detail: "target-body-base-color",
+              relation: null,
+              source: "creatorMetadata"
+            }
+          ],
+          id: "mesh|Body|baseColor|texture|preview",
+          layer: "baseColor",
+          materialSlotName: "Body",
+          meshAssetId: "mesh",
+          meshLabel: "/Game/UtahRaptor/Meshes/SM_Target.SM_Target",
+          mimeType: "image/png",
+          textureAssetId: "texture",
+          textureLabel: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+          textureObjectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+          texturePackagePath: "/Game/UtahRaptor/Textures/T_Target",
+          texturePreviewId: "target-base-color"
+        }
+      ],
+      generatedAt: "2026-08-25T00:00:00.000Z",
+      problems: []
+    });
+
+    expect(result.candidates[0]?.layer).toBe("baseColor");
+  });
+
+  it("accepts Skeleton model preview roles", () => {
+    const preview = CreatorModelPreviewResultSchema.parse({
+      status: "available",
+      asset: {
+        ...creatorBrowserEntries()[0],
+        assetClass: "Skeleton",
+        objectPath: "/Game/Test/SKEL_Target.SKEL_Target",
+        packagePath: "/Game/Test/SKEL_Target"
+      },
+      preview: null,
+      activeWinner: null,
+      model: {
+        dataUrl: "data:model/gltf+json;base64,e30=",
+        format: "gltf",
+        source: "decodedBaseGame",
+        fileName: "SKEL_Target.gltf",
+        sizeBytes: 2
+      },
+      metadata: {
+        meshType: "skeleton",
+        skeleton: null,
+        physicsAsset: null,
+        materialSlots: [],
+        lods: [],
+        dependencyPaths: [],
+        targetObjectPath: "/Game/Test/SKEL_Target.SKEL_Target",
+        packagePath: "/Game/Test/SKEL_Target",
+        packageSource: "Clawed base game",
+        sourceContainer: "Clawed-Windows",
+        previewSource: "Direct decoded base-game asset",
+        lodCount: null,
+        vertexCount: null,
+        triangleCount: null,
+        materialSlotCount: null,
+        validationState: null,
+        conflictWinner: null,
+        exportState: "exportable"
+      },
+      problems: []
+    });
+
+    expect(preview.metadata.meshType).toBe("skeleton");
+    expect(preview.model?.format).toBe("gltf");
   });
 
   it("rejects creator payload paths outside payload/", () => {
@@ -384,6 +509,7 @@ describe("creator asset contracts", () => {
     });
 
     expect(entry.virtualPath).toBeNull();
+    expect(entry.viewportCapable).toBe(false);
   });
 
   it("validates export plan responses", () => {
@@ -427,6 +553,7 @@ describe("creator asset contracts", () => {
           hasChildren: false,
           childCount: 0,
           assetClass: "Texture2D",
+          viewportCapable: true,
           packageName: "Female Character A",
           validationState: "validated",
           conflictState: "winner",
@@ -443,6 +570,7 @@ describe("creator asset contracts", () => {
     expect(result.nodes[0].kind).toBe("root");
     expect(result.nodes[1].assetClass).toBe("Texture2D");
     expect(result.nodes[1].viewportState).toBe("viewable");
+    expect(result.nodes[1].viewportCapable).toBe(true);
   });
 
   it("defaults expanded conflict graph resolver metadata", () => {

@@ -134,7 +134,7 @@ export function createMainServices(options?: {
       mapRoot: getBundledClawedFileMapPath(),
       baseGameMeshDecoder: new Cue4ParseMeshDecoder({
         sidecarPath: getBundledCue4ParseDecoderPath(),
-        unrealVersion: "GAME_UE5_5",
+        unrealVersion: process.env.CMM_CUE4PARSE_UNREAL_VERSION ?? "GAME_UE5_5",
         aesKey: process.env.CMM_CUE4PARSE_AES_KEY ?? null,
         resolveMappingsPath: async () => {
           const bundled = getBundledCue4ParseMappingsPath();

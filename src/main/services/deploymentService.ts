@@ -73,7 +73,12 @@ const CURRENT_MANIFEST_FILENAME = "current-deployment.json";
 export interface DeploymentServiceOptions {
   failAfterFileOperations?: number;
   settingsService?: SettingsServiceContract;
+  clawedLocalAppDataRoot?: string;
 }
+
+const SAVE_BACKUP_ROTATOR_MOD_ID = "SaveBackupRotator";
+const SAVE_BACKUP_ROTATOR_PACKAGE_ID =
+  `cmm:generated:${SAVE_BACKUP_ROTATOR_MOD_ID}`;
 
 export class LocalDeploymentService implements DeploymentServiceContract {
   private readonly adapters: DeploymentAdapterContract[];
@@ -362,6 +367,8 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         discovery,
         transactionId
       });
+      const generatedPackageProblems =
+        await this.prepareGeneratedPackageRuntimeStorage(plan.enabledRecords);
 
       await this.logger.log({
         category: "deploymentService",
@@ -379,6 +386,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
         problems: [
           ...loadOrderProblems,
           ...plan.problems,
+          ...generatedPackageProblems,
           ...buildRefreshProblems,
           ...validationResults.flatMap((validation) =>
             validation.messages.map((message) =>
@@ -1182,6 +1190,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
     installedMods: InstalledModManifestRecord[]
   ): {
     adapters: DeploymentAdapterContract[];
+    enabledRecords: InstalledModManifestRecord[];
     problems: ModProblem[];
     requiresRuntime: boolean;
   } {
@@ -1219,10 +1228,76 @@ export class LocalDeploymentService implements DeploymentServiceContract {
 
     return {
       adapters,
+      enabledRecords,
       problems,
       requiresRuntime: adapters.some((adapter) => adapter.capabilities.requiresRuntime)
     };
   }
+
+  private async prepareGeneratedPackageRuntimeStorage(
+    enabledRecords: InstalledModManifestRecord[]
+  ): Promise<ModProblem[]> {
+    if (!enabledRecords.some(isSaveBackupRotatorRecord)) {
+      return [];
+    }
+
+    const backupDirectory = clawedSaveBackupDirectory(
+      this.options.clawedLocalAppDataRoot
+    );
+    if (!backupDirectory) {
+      return [
+        modProblem(
+          "warning",
+          "SAVE_BACKUP_STORAGE_UNAVAILABLE",
+          "CMM could not prepare the Save Backup Rotator folder because Windows local app data could not be resolved."
+        )
+      ];
+    }
+
+    try {
+      await mkdir(backupDirectory, { recursive: true });
+      return [];
+    } catch (error) {
+      return [
+        modProblem(
+          "warning",
+          "SAVE_BACKUP_STORAGE_PREP_FAILED",
+          "CMM could not prepare the Save Backup Rotator folder before launch.",
+          error instanceof Error ? error.message : String(error)
+        )
+      ];
+    }
+  }
+}
+
+function isSaveBackupRotatorRecord(
+  record: InstalledModManifestRecord
+): boolean {
+  return (
+    record.manifest.id === SAVE_BACKUP_ROTATOR_MOD_ID &&
+    record.manifest.packageIdentity?.id === SAVE_BACKUP_ROTATOR_PACKAGE_ID &&
+    record.manifest.packageIdentity.source === "cmmGenerated"
+  );
+}
+
+function clawedSaveBackupDirectory(
+  localAppDataRoot?: string
+): string | null {
+  const root = localAppDataRoot?.trim() || defaultLocalAppDataRoot();
+  if (!root || root.includes("\0")) {
+    return null;
+  }
+  return path.join(root, "Clawed", "Saved", "SaveBackups");
+}
+
+function defaultLocalAppDataRoot(): string | null {
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (localAppData) {
+    return localAppData;
+  }
+
+  const userProfile = process.env.USERPROFILE?.trim();
+  return userProfile ? path.join(userProfile, "AppData", "Local") : null;
 }
 
 function validatePlannedFile(

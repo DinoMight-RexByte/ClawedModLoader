@@ -34,6 +34,8 @@ const ankylosaurusAsset: CreatorAssetIndexEntry = {
   activeProfileEnabled: false,
   activeProfileOrder: null,
   assetClass: "SkeletalMesh",
+  viewportCapable: true,
+  viewportState: "viewable",
   packagePath: "/Game/Ankylosaurus/Meshes/SK_Ankylosaurus_T_POSE",
   objectPath:
     "/Game/Ankylosaurus/Meshes/SK_Ankylosaurus_T_POSE.SK_Ankylosaurus_T_POSE",
@@ -50,7 +52,6 @@ const ankylosaurusAsset: CreatorAssetIndexEntry = {
   validationState: null,
   deploymentRoute: null,
   exportState: "exportable",
-  viewportState: "viewable",
   conflictState: "none"
 };
 
@@ -165,7 +166,9 @@ async function decodeAnkylosaurusPreview(): Promise<CreatorModelPreviewResult> {
     unrealVersion: process.env.CMM_CUE4PARSE_UNREAL_VERSION ?? "GAME_UE5_5",
     aesKey: process.env.CMM_CUE4PARSE_AES_KEY ?? null,
     timeoutMs: 180_000,
-    maxOutputBytes: Number(process.env.CMM_CREATOR_VIEWPORT_MAX_MODEL_BYTES) || 80 * 1024 * 1024
+    maxOutputBytes:
+      Number(process.env.CMM_CREATOR_VIEWPORT_MAX_MODEL_BYTES) ||
+      80 * 1024 * 1024
   });
   const result = await decoder.decode({
     asset: ankylosaurusAsset,

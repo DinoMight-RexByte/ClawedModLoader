@@ -12,7 +12,7 @@ import {
 
 const modId = "SaveBackupRotator";
 const modName = "Save Backup Rotator";
-const version = "0.1.0-prototype.20260824";
+const version = "0.1.1-prototype.20260825";
 const steamBuildId = await currentClawedSteamBuildId();
 const steamBuildNotes =
   "Save backup package generated against the currently detected Clawed build; save-hook behavior has not been live validated.";
@@ -23,7 +23,7 @@ const outputRoot = path.resolve(
 );
 const payloadPath = `payload/Mods/${modId}/Scripts/main.lua`;
 const lua = String.raw`local marker = "[SaveBackupRotator] "
-local version = "0.1.0-prototype.20260824"
+local version = "0.1.1-prototype.20260825"
 local backup_delay_ms = 1500
 local max_snapshots = 3
 local chunk_size = 131072
@@ -32,6 +32,7 @@ local backup_root_name = "SaveBackups"
 local pending = false
 local pending_reason = "startup"
 local serial = 0
+local dynamic_slots = {}
 
 local function log(event, value)
     print(marker .. event .. "|" .. tostring(value))
@@ -75,20 +76,16 @@ local function safe_name(value)
     return value
 end
 
-local function cmd_quote(value)
+local function safe_relative_path(value)
     value = tostring(value or "")
     if value == "" then return nil end
-    if string.find(value, "[\"\r\n%%]") ~= nil then return nil end
-    return '"' .. value .. '"'
-end
-
-local function mkdir(path_value)
-    if type(os.execute) ~= "function" then return false, "os_execute_missing" end
-    local quoted = cmd_quote(path_value)
-    if quoted == nil then return false, "unsafe_path" end
-    local ok, _, code = os.execute("mkdir " .. quoted .. " >nul 2>nul")
-    if ok == true or ok == 0 or code == 0 then return true, "ok" end
-    return false, "mkdir_failed"
+    value = string.gsub(value, "/", "\\")
+    if string.find(value, "[:\r\n\t\"<>|]") ~= nil then return nil end
+    if string.sub(value, 1, 1) == "\\" then return nil end
+    for segment in string.gmatch(value, "[^\\]+") do
+        if safe_name(segment) == nil then return nil end
+    end
+    return value
 end
 
 local function directory_writable(path_value)
@@ -101,26 +98,140 @@ local function directory_writable(path_value)
     return true
 end
 
-local function ensure_directory(path_value)
-    mkdir(path_value)
-    if directory_writable(path_value) then return true end
-    return false
+local function file_exists(path_value)
+    local file = io.open(path_value, "rb")
+    if file == nil then return false end
+    file:close()
+    return true
 end
 
-local function list_files(directory)
-    if type(io.popen) ~= "function" then return nil, "io_popen_missing" end
-    local quoted = cmd_quote(directory)
-    if quoted == nil then return nil, "unsafe_path" end
-    local pipe = io.popen("dir /b /a-d " .. quoted .. " 2>nul", "r")
-    if pipe == nil then return nil, "dir_failed" end
-    local files = {}
-    for line in pipe:lines() do
-        local name = safe_name(line)
-        if name ~= nil then table.insert(files, name) end
+local function path_inside(path_value, root)
+    local value = string.lower(string.gsub(tostring(path_value or ""), "/", "\\"))
+    local base = string.lower(string.gsub(tostring(root or ""), "/", "\\"))
+    if value == base then return true end
+    if string.sub(base, -1) ~= "\\" then base = base .. "\\" end
+    return string.sub(value, 1, string.len(base)) == base
+end
+
+local function backup_file_name(snapshot, relative_path)
+    local name = string.gsub(tostring(relative_path or ""), "[/\\]+", "__")
+    name = string.gsub(name, "[^A-Za-z0-9%._%-_]", "_")
+    return snapshot .. "__" .. name
+end
+
+local function add_slot_text(value)
+    local text = text_value(value)
+    if text == nil then return end
+    text = string.gsub(text, "^%s*(.-)%s*$", "%1")
+    if safe_name(text) ~= nil then dynamic_slots[text] = true end
+    local number = string.match(text, "^[Ss]ave[Gg]ame[_%-]?(%d+)$") or string.match(text, "^(%d+)$")
+    if number ~= nil then dynamic_slots["savegame_" .. number] = true end
+end
+
+local function capture_hook_values(...)
+    for index = 1, select("#", ...) do
+        add_slot_text(select(index, ...))
     end
-    pipe:close()
-    table.sort(files)
-    return files, nil
+end
+
+local function project_saved_root()
+    local helpers = rawget(_G, "UEHelpers")
+    if type(helpers) ~= "table" or type(helpers.GetKismetSystemLibrary) ~= "function" then return nil end
+    local ok_kismet, kismet = pcall(function() return helpers.GetKismetSystemLibrary() end)
+    if not ok_kismet or kismet == nil then return nil end
+    local ok_path, value = pcall(function() return kismet:GetProjectSavedDirectory() end)
+    if not ok_path then return nil end
+    local text = text_value(value)
+    if text ~= nil and text ~= "" then return text end
+    return nil
+end
+
+local function local_app_data()
+    local value = os.getenv("LOCALAPPDATA")
+    if value ~= nil and value ~= "" then return value end
+    local profile = os.getenv("USERPROFILE")
+    if profile ~= nil and profile ~= "" then return join_path(join_path(profile, "AppData"), "Local") end
+    return nil
+end
+
+local function saved_roots()
+    local roots = {}
+    local seen = {}
+    local project_root = project_saved_root()
+    if project_root ~= nil then
+        seen[string.lower(project_root)] = true
+        table.insert(roots, project_root)
+    end
+    local app_data = local_app_data()
+    if app_data ~= nil then
+        local env_root = join_path(join_path(app_data, "Clawed"), "Saved")
+        local key = string.lower(env_root)
+        if not seen[key] then table.insert(roots, env_root) end
+    end
+    return roots
+end
+
+local function save_candidates()
+    local candidates = {}
+    for _, saved_root in ipairs(saved_roots()) do
+        table.insert(candidates, { save_dir = join_path(saved_root, "SaveGames"), backup_dir = join_path(saved_root, backup_root_name) })
+        table.insert(candidates, { save_dir = join_path(saved_root, "Savegames"), backup_dir = join_path(saved_root, backup_root_name) })
+        table.insert(candidates, { save_dir = join_path(saved_root, "SaveGame"), backup_dir = join_path(saved_root, backup_root_name) })
+        table.insert(candidates, { save_dir = join_path(saved_root, "Savegame"), backup_dir = join_path(saved_root, backup_root_name) })
+    end
+    return candidates
+end
+
+local function known_slots()
+    local slots = {}
+    local seen = {}
+    for index = 1, 10 do
+        local slot = "savegame_" .. tostring(index)
+        seen[slot] = true
+        table.insert(slots, slot)
+    end
+    for slot in pairs(dynamic_slots) do
+        if not seen[slot] and safe_name(slot) ~= nil then
+            table.insert(slots, slot)
+        end
+    end
+    table.sort(slots)
+    return slots
+end
+
+local function add_target(targets, seen, save_dir, relative_path)
+    local relative = safe_relative_path(relative_path)
+    if relative == nil or seen[relative] then return end
+    local source = join_path(save_dir, relative)
+    if not file_exists(source) then return end
+    seen[relative] = true
+    table.insert(targets, { relative = relative, source = source })
+end
+
+local function save_targets(save_dir)
+    local targets = {}
+    local seen = {}
+    add_target(targets, seen, save_dir, "EnhancedInputUserSettings.sav")
+    for _, slot in ipairs(known_slots()) do
+        add_target(targets, seen, save_dir, join_path(slot, "Default__BP_CustomSaveGameObject_C.sav"))
+    end
+    return targets
+end
+
+local function find_save_set()
+    local first = nil
+    for _, candidate in ipairs(save_candidates()) do
+        if first == nil then first = candidate end
+        local targets = save_targets(candidate.save_dir)
+        if #targets > 0 then return candidate.save_dir, candidate.backup_dir, targets, nil end
+    end
+    if first ~= nil then return first.save_dir, first.backup_dir, {}, "no_known_save_files" end
+    return nil, nil, {}, "saved_root_missing"
+end
+
+local function writable_backup_directory(path_value)
+    if directory_writable(path_value) then return true end
+    return false
 end
 
 local function copy_file(source, target)
@@ -141,7 +252,7 @@ local function copy_file(source, target)
     return true, "ok"
 end
 
-local function read_manifest(path_value)
+local function read_manifest(path_value, backup_dir)
     local entries = {}
     local file = io.open(path_value, "rb")
     if file == nil then return entries end
@@ -151,12 +262,18 @@ local function read_manifest(path_value)
             table.insert(fields, field)
         end
         if #fields >= 2 then
-            local entry = { directory = fields[1], files = {} }
+            local key = fields[1]
+            local entry = nil
+            if safe_name(key) ~= nil then
+                entry = { kind = "flat", snapshot = key, directory = backup_dir, files = {} }
+            elseif path_inside(key, backup_dir) then
+                entry = { kind = "directory", directory = key, files = {} }
+            end
             for index = 2, #fields do
                 local name = safe_name(fields[index])
-                if name ~= nil then table.insert(entry.files, name) end
+                if entry ~= nil and name ~= nil then table.insert(entry.files, name) end
             end
-            if #entry.files > 0 then table.insert(entries, entry) end
+            if entry ~= nil and #entry.files > 0 then table.insert(entries, entry) end
         end
     end
     file:close()
@@ -168,7 +285,7 @@ local function write_manifest(path_value, entries)
     local file = io.open(temp_path, "wb")
     if file == nil then return false end
     for _, entry in ipairs(entries) do
-        file:write(entry.directory)
+        file:write(entry.snapshot or entry.directory)
         for _, name in ipairs(entry.files) do
             file:write("\t")
             file:write(name)
@@ -186,41 +303,8 @@ local function prune_entry(entry)
     for _, name in ipairs(entry.files) do
         if os.remove(join_path(entry.directory, name)) then removed = removed + 1 end
     end
-    os.remove(entry.directory)
+    if entry.kind == "directory" then os.remove(entry.directory) end
     return removed
-end
-
-local function local_app_data()
-    local value = os.getenv("LOCALAPPDATA")
-    if value ~= nil and value ~= "" then return value end
-    local profile = os.getenv("USERPROFILE")
-    if profile ~= nil and profile ~= "" then return join_path(join_path(profile, "AppData"), "Local") end
-    return nil
-end
-
-local function save_candidates()
-    local root = local_app_data()
-    if root == nil then return {} end
-    local saved_root = join_path(join_path(root, "Clawed"), "Saved")
-    return {
-        { save_dir = join_path(saved_root, "SaveGames"), backup_dir = join_path(saved_root, backup_root_name) },
-        { save_dir = join_path(saved_root, "Savegames"), backup_dir = join_path(saved_root, backup_root_name) },
-        { save_dir = join_path(saved_root, "SaveGame"), backup_dir = join_path(saved_root, backup_root_name) },
-        { save_dir = join_path(saved_root, "Savegame"), backup_dir = join_path(saved_root, backup_root_name) }
-    }
-end
-
-local function find_save_set()
-    local first = nil
-    local last_error = "not_found"
-    for _, candidate in ipairs(save_candidates()) do
-        if first == nil then first = candidate end
-        local files, err = list_files(candidate.save_dir)
-        if files ~= nil and #files > 0 then return candidate.save_dir, candidate.backup_dir, files, nil end
-        if err ~= nil then last_error = err end
-    end
-    if first ~= nil then return first.save_dir, first.backup_dir, {}, last_error end
-    return nil, nil, {}, "local_app_data_missing"
 end
 
 local function snapshot_name()
@@ -238,35 +322,30 @@ local function run_backup(reason)
         log("backup_skipped", tostring(reason) .. "|reason=no_save_files")
         return
     end
-    if not ensure_directory(backup_dir) then
-        log("backup_failed", tostring(reason) .. "|reason=backup_folder_unwritable")
+    if not writable_backup_directory(backup_dir) then
+        log("backup_failed", tostring(reason) .. "|reason=backup_folder_unwritable_or_missing")
         return
     end
     local name = snapshot_name()
-    local snapshot_dir = join_path(backup_dir, name)
-    if not ensure_directory(snapshot_dir) then
-        log("backup_failed", tostring(reason) .. "|reason=snapshot_folder_unwritable|snapshot=" .. name)
-        return
-    end
     local copied = {}
     local failed = 0
-    for _, file_name in ipairs(files) do
-        local ok, copy_err = copy_file(join_path(save_dir, file_name), join_path(snapshot_dir, file_name))
+    for _, target in ipairs(files) do
+        local output_name = backup_file_name(name, target.relative)
+        local ok, copy_err = copy_file(target.source, join_path(backup_dir, output_name))
         if ok then
-            table.insert(copied, file_name)
+            table.insert(copied, output_name)
         else
             failed = failed + 1
-            log("copy_failed", tostring(reason) .. "|file=" .. tostring(file_name) .. "|reason=" .. tostring(copy_err))
+            log("copy_failed", tostring(reason) .. "|file=" .. tostring(target.relative) .. "|reason=" .. tostring(copy_err))
         end
     end
     if #copied == 0 then
-        os.remove(snapshot_dir)
         log("backup_failed", tostring(reason) .. "|reason=no_files_copied|failed=" .. tostring(failed))
         return
     end
     local manifest_path = join_path(backup_dir, manifest_name)
-    local entries = read_manifest(manifest_path)
-    table.insert(entries, { directory = snapshot_dir, files = copied })
+    local entries = read_manifest(manifest_path, backup_dir)
+    table.insert(entries, { kind = "flat", snapshot = name, directory = backup_dir, files = copied })
     local pruned = 0
     while #entries > max_snapshots do
         pruned = pruned + prune_entry(table.remove(entries, 1))
@@ -300,6 +379,7 @@ end
 
 local function hook_callback(label)
     return function(...)
+        capture_hook_values(...)
         queue_backup(label)
     end
 end
@@ -362,11 +442,13 @@ const readme = [
   "",
   "- Hooks Unreal `GameplayStatics:SaveGameToSlot`, `AsyncActionHandleSaveGame:AsyncSaveGameToSlot`, Easy Multi Save `SaveCustom`/`AsyncSaveActors`, and Clawed save Blueprint entry points when they are present.",
   "- Debounces clustered save hooks and waits 1.5 seconds before copying so the game's save write can settle.",
-  "- Copies regular files from `%LOCALAPPDATA%\\Clawed\\Saved\\SaveGames` into `%LOCALAPPDATA%\\Clawed\\Saved\\SaveBackups\\backup-YYYYMMDD-HHMMSS-NNN`.",
-  "- Keeps the latest three backup snapshots and prunes only files listed in its own `SaveBackups\\backup-manifest.tsv`.",
+  "- Copies known Clawed save targets, including `%LOCALAPPDATA%\\Clawed\\Saved\\SaveGames\\savegame_N\\Default__BP_CustomSaveGameObject_C.sav`, into `%LOCALAPPDATA%\\Clawed\\Saved\\SaveBackups`.",
+  "- Names backup files with `backup-YYYYMMDD-HHMMSS-NNN__...` and tracks each snapshot in `SaveBackups\\backup-manifest.tsv`.",
+  "- Keeps the latest three backup snapshots and prunes only files listed in its own manifest.",
   "- Does not delete, rename, overwrite, or edit files in the active `SaveGames` folder.",
   "- Registers `cmm_backup_saves` as a manual console command when UE4SS exposes console command handlers.",
-  "- Requires the standard UE4SS Windows Lua `io`, `os`, and `io.popen` libraries for directory creation/listing and file copying.",
+  "- Uses Lua file IO for backup work and does not launch `cmd`, PowerShell, or other helper processes during save backups.",
+  "- CMM prepares the `SaveBackups` folder before launching Clawed when this generated package is enabled.",
   "",
   "Expected UE4SS markers include:",
   "",
@@ -466,9 +548,10 @@ async function writePackage(outputDirectory) {
     ),
     backupBehavior: [
       "triggered by save-related UE4SS hooks",
-      "copies current SaveGames files to Saved\\SaveBackups snapshots",
-      "autonames snapshots as backup-YYYYMMDD-HHMMSS-NNN",
+      "copies known nested Clawed save files to Saved\\SaveBackups",
+      "autonames backup files as backup-YYYYMMDD-HHMMSS-NNN__...",
       "retains three package-created backup snapshots",
+      "does not launch command-shell helper processes during save backups",
       "does not delete or mutate active SaveGames files"
     ],
     safetyBoundaries: [

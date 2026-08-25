@@ -86,6 +86,7 @@ describe("clawed mod package service", () => {
           ],
           supportedSteamBuilds: [],
           previewAssets: [],
+          textureBindings: [],
           importProvenance: [
             {
               sourceKind: "generated",

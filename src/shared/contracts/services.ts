@@ -27,6 +27,9 @@ import type {
   CreatorModelPreviewResult,
   CreatorPreviewLookupRequest,
   CreatorPreviewLookupResult,
+  CreatorViewportTextureCandidatesRequest,
+  CreatorViewportTextureCandidatesResult,
+  CreatorViewportSession,
   DiagnosticReport,
   DiagnosticsSummary,
   CreateProfileRequest,
@@ -223,6 +226,9 @@ export interface AssetRegistryServiceContract extends ServiceHealthReporter {
   getReport(
     request: CreatorAssetReportRequest
   ): Promise<CreatorAssetReportResult>;
+  getViewportTextureCandidates(
+    request: CreatorViewportTextureCandidatesRequest
+  ): Promise<CreatorViewportTextureCandidatesResult>;
 }
 
 export interface ProfileServiceContract extends ServiceHealthReporter {
@@ -292,6 +298,15 @@ export interface DiagnosticsServiceContract extends ServiceHealthReporter {
     request: RendererErrorReportRequest
   ): Promise<RendererErrorReportResult>;
   openLogs(): Promise<LogOpenResult>;
+}
+
+export interface CreatorViewportWindowServiceContract {
+  open(session: CreatorViewportSession): Promise<CreatorViewportSession>;
+  read(): Promise<CreatorViewportSession>;
+  update(session: CreatorViewportSession): Promise<CreatorViewportSession>;
+  returnToMain(
+    session: CreatorViewportSession
+  ): Promise<CreatorViewportSession>;
 }
 
 export interface StorageServiceContract {

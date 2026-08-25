@@ -20,6 +20,8 @@ import {
   CreatorAssetTreeRequestSchema,
   CreatorAssetTreeResultSchema,
   ClawedModManifestV1Schema,
+  CreatorViewportTextureCandidatesRequestSchema,
+  CreatorViewportTextureCandidatesResultSchema,
   CreatorExportPlanRequestSchema,
   CreatorExportPlanResultSchema,
   CreatorMeshExportRequestSchema,
@@ -43,6 +45,11 @@ import {
   type CreatorAssetSearchRequest,
   type CreatorAssetTreeNode,
   type CreatorAssetTreeRequest,
+  type CreatorTextureBinding,
+  type CreatorViewportTextureCandidate,
+  type CreatorViewportTextureEvidence,
+  type CreatorViewportTextureHint,
+  type CreatorViewportTextureLayer,
   type CreatorExportEligibility,
   type CreatorExportOutput,
   type CreatorExportPlanItem,
@@ -83,6 +90,7 @@ const MAP_FILES = [
   "clawed-map-summary.json"
 ] as const;
 const MAX_MODEL_PREVIEW_BYTES = 15 * 1024 * 1024;
+const MAX_TEXTURE_PREVIEW_BYTES = 8 * 1024 * 1024;
 const MODEL_PREVIEW_FORMATS = new Set(["gltf", "glb", "obj"]);
 const MESH_EXPORT_FORMATS = new Set(["obj", "gltf", "glb"]);
 const BASE_GAME_PREVIEW_INDEX = "index.json";
@@ -90,6 +98,10 @@ const BASE_GAME_MESH_ASSET_CLASSES = new Set([
   "StaticMesh",
   "SkeletalMesh",
   "Skeleton"
+]);
+const BASE_GAME_MESH_EXPORT_ASSET_CLASSES = new Set([
+  "StaticMesh",
+  "SkeletalMesh"
 ]);
 
 interface AssetRegistryOptions {
@@ -127,6 +139,7 @@ interface RuntimeAssetIndex {
   checksumsByPackage: Map<string, CreatorAssetChecksum[]>;
   dependenciesByAssetId: Map<string, CreatorAssetDependency[]>;
   previewsByAssetId: Map<string, CreatorPreviewAsset[]>;
+  textureBindings: IndexedCreatorTextureBinding[];
   eligibilityByAssetId: Map<string, CreatorExportEligibility>;
   recordsByPackage: Map<string, InstalledModManifestRecord>;
   loadOrderValidation: LoadOrderValidation;
@@ -287,11 +300,12 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
     const parsed = CreatorAssetTreeRequestSchema.parse(request);
     if (!parsed.parentId && !parsed.query.trim() && !parsed.activeOnly) {
       const snapshot = await this.buildSnapshot();
+      const nodes = rootTreeNodes(snapshot, parsed);
       return CreatorAssetTreeResultSchema.parse({
         generatedAt: snapshot.generatedAt,
         parentId: null,
-        nodes: rootTreeNodes(snapshot, parsed),
-        totalChildren: rootTreeNodes(snapshot, parsed).length,
+        nodes,
+        totalChildren: nodes.length,
         truncated: false,
         problems: snapshot.problems
       });
@@ -637,6 +651,28 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
     });
   }
 
+  async getViewportTextureCandidates(request: unknown) {
+    const parsed = CreatorViewportTextureCandidatesRequestSchema.parse(request);
+    if (!parsed.visibleAssetIds.length) {
+      return CreatorViewportTextureCandidatesResultSchema.parse({
+        candidates: [],
+        generatedAt: new Date().toISOString(),
+        problems: []
+      });
+    }
+    const index = await this.buildIndex();
+    const candidates = await viewportTextureCandidates(
+      parsed.visibleAssetIds,
+      parsed.textureHints,
+      index
+    );
+    return CreatorViewportTextureCandidatesResultSchema.parse({
+      candidates,
+      generatedAt: index.generatedAt,
+      problems: []
+    });
+  }
+
   private async buildSnapshot(): Promise<CreatorAssetRegistrySnapshot> {
     const [baseMap, records, profile, deployment, loadOrderValidation] =
       await Promise.all([
@@ -786,6 +822,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
       checksumsByPackage: groupChecksumsByPackage(packageIndex.checksums),
       dependenciesByAssetId: packageIndex.dependenciesByAssetId,
       previewsByAssetId: packageIndex.previewsByAssetId,
+      textureBindings: packageIndex.textureBindings,
       eligibilityByAssetId: packageIndex.eligibilityByAssetId,
       recordsByPackage: new Map(
         records.map((record) => [
@@ -846,6 +883,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
     const checksums: CreatorAssetChecksum[] = [];
     const dependenciesByAssetId = new Map<string, CreatorAssetDependency[]>();
     const previewsByAssetId = new Map<string, CreatorPreviewAsset[]>();
+    const textureBindings: IndexedCreatorTextureBinding[] = [];
     const eligibilityByAssetId = new Map<string, CreatorExportEligibility>();
     let payloadEntryCount = 0;
     let affectedAssetCount = 0;
@@ -912,6 +950,15 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
       if (creator) {
         affectedAssetCount += creator.affectedAssets.length;
         replacementCount += creator.replacements.length;
+        textureBindings.push(
+          ...creator.textureBindings.map((binding) => ({
+            ...binding,
+            packageId: record.manifest.id,
+            packageName: record.manifest.name,
+            packageVersion: record.manifest.version,
+            activeProfileEnabled: enabled
+          }))
+        );
         for (const affected of creator.affectedAssets) {
           const replacement = creator.replacements.find(
             (candidate) =>
@@ -951,6 +998,12 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
               indexedPackagePath
             ].find((value): value is string => Boolean(value)) ?? null;
           const assetId = `asset:${identity}:${affected.id}`;
+          const previews = creator.previewAssets.filter(
+            (preview) =>
+              preview.objectPath === affected.objectPath ||
+              preview.objectPath === indexedObjectPath ||
+              affected.payloadPath === preview.payloadPath
+          );
           const entry = CreatorAssetIndexEntrySchema.parse({
             id: assetId,
             label:
@@ -968,6 +1021,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
             activeProfileEnabled: enabled,
             activeProfileOrder,
             assetClass: affected.assetClass,
+            viewportCapable: previews.some(isSupportedViewportModelPreview),
             packagePath: indexedPackagePath,
             objectPath: indexedObjectPath,
             virtualPath: indexedVirtualPath,
@@ -1008,15 +1062,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
                 dependency.toVirtualPath === indexedVirtualPath
             )
           );
-          previewsByAssetId.set(
-            assetId,
-            creator.previewAssets.filter(
-              (preview) =>
-                preview.objectPath === affected.objectPath ||
-                preview.objectPath === indexedObjectPath ||
-                affected.payloadPath === preview.payloadPath
-            )
-          );
+          previewsByAssetId.set(assetId, previews);
         }
       }
 
@@ -1035,6 +1081,7 @@ export class LocalAssetRegistryService implements AssetRegistryServiceContract {
       checksums,
       dependenciesByAssetId,
       previewsByAssetId,
+      textureBindings,
       eligibilityByAssetId,
       payloadEntryCount,
       affectedAssetCount,
@@ -1211,6 +1258,7 @@ function mapRowToEntry(row: CsvMapRow): CreatorAssetIndexEntry | null {
     [row.source, rowPath, objectPath ?? "", packagePath ?? ""].join("\0")
   )}`;
 
+  const assetClass = inferAssetClass(row.extension, rowPath, tags);
   return CreatorAssetIndexEntrySchema.parse({
     id,
     label: objectPath ?? packagePath ?? rowPath,
@@ -1223,7 +1271,8 @@ function mapRowToEntry(row: CsvMapRow): CreatorAssetIndexEntry | null {
     loader: null,
     activeProfileEnabled: false,
     activeProfileOrder: null,
-    assetClass: inferAssetClass(row.extension, rowPath, tags),
+    assetClass,
+    viewportCapable: isViewportCapableAssetClass(assetClass),
     packagePath,
     objectPath,
     virtualPath: baseVirtualPath(rowPath),
@@ -1981,6 +2030,7 @@ function assetTreeNode(
     hasChildren: false,
     childCount: 0,
     assetClass: entry.assetClass,
+    viewportCapable: entry.viewportCapable,
     packageName: entry.packageName,
     validationState: entry.validationState,
     conflictState: entry.conflictState,
@@ -2348,6 +2398,508 @@ function detailForAsset(
   });
 }
 
+async function viewportTextureCandidates(
+  visibleAssetIds: string[],
+  textureHints: CreatorViewportTextureHint[],
+  index: RuntimeAssetIndex
+): Promise<CreatorViewportTextureCandidate[]> {
+  const meshes = uniqueStrings(visibleAssetIds)
+    .map((assetId) => index.entriesById.get(assetId))
+    .filter((asset): asset is CreatorAssetIndexEntry =>
+      Boolean(asset && isTextureBindableMesh(asset))
+    );
+  const candidates = new Map<string, CreatorViewportTextureCandidate>();
+
+  for (const mesh of meshes) {
+    for (const binding of index.textureBindings) {
+      if (!textureBindingMatchesMesh(binding, mesh)) {
+        continue;
+      }
+      const texture = resolveTextureBindingAsset(binding, index);
+      if (!texture || !isTexture2DAsset(texture)) {
+        continue;
+      }
+      const candidate = await textureCandidateForAsset({
+        evidence: [
+          {
+            detail: binding.id ?? binding.packageName,
+            relation: null,
+            source: binding.evidence
+          }
+        ],
+        layer: binding.layer,
+        materialSlotName: binding.materialSlotName,
+        mesh,
+        texture,
+        texturePreviewId: binding.texturePreviewId,
+        index
+      });
+      if (candidate) {
+        candidates.set(candidate.id, candidate);
+      }
+    }
+
+    for (const hint of textureHintsForMesh(mesh, textureHints)) {
+      for (const texture of texturesForViewportHint(hint, index)) {
+        const candidate = await textureCandidateForAsset({
+          evidence: [
+            {
+              detail: hint.materialPath ?? hint.materialSlotName,
+              relation: "materialTexture",
+              source: "decodedMaterialDependency"
+            }
+          ],
+          layer: layerForTexturePath(texture.objectPath ?? texture.packagePath),
+          materialSlotName: hint.materialSlotName,
+          mesh,
+          texture,
+          texturePreviewId: null,
+          index
+        });
+        if (candidate) {
+          candidates.set(candidate.id, candidate);
+        }
+      }
+    }
+
+    for (const dependency of textureDependenciesForMesh(mesh, index)) {
+      const layer = layerForTextureRelation(dependency.relation);
+      if (!layer) {
+        continue;
+      }
+      const texture = resolveTextureDependencyAsset(dependency, index);
+      if (!texture || !isTexture2DAsset(texture)) {
+        continue;
+      }
+      const candidate = await textureCandidateForAsset({
+        evidence: [
+          {
+            detail: dependency.toObjectPath ?? dependency.toPackagePath ?? null,
+            relation: dependency.relation,
+            source:
+              texture.conflictState === "winner"
+                ? "activeConflict"
+                : "decodedMaterialDependency"
+          }
+        ],
+        layer,
+        materialSlotName: null,
+        mesh,
+        texture,
+        texturePreviewId: null,
+        index
+      });
+      if (candidate) {
+        candidates.set(candidate.id, candidate);
+      }
+    }
+  }
+
+  return [...candidates.values()].sort((left, right) =>
+    [
+      left.meshLabel.localeCompare(right.meshLabel),
+      (left.materialSlotName ?? "").localeCompare(right.materialSlotName ?? ""),
+      left.layer.localeCompare(right.layer),
+      left.textureLabel.localeCompare(right.textureLabel)
+    ].find((result) => result !== 0) ?? 0
+  );
+}
+
+async function textureCandidateForAsset({
+  evidence,
+  index,
+  layer,
+  materialSlotName,
+  mesh,
+  texture,
+  texturePreviewId
+}: {
+  evidence: CreatorViewportTextureEvidence[];
+  index: RuntimeAssetIndex;
+  layer: CreatorViewportTextureLayer;
+  materialSlotName: string | null;
+  mesh: CreatorAssetIndexEntry;
+  texture: CreatorAssetIndexEntry;
+  texturePreviewId: string | null | undefined;
+}): Promise<CreatorViewportTextureCandidate | null> {
+  const preview = await readTexturePreviewData(texture, texturePreviewId, index);
+  const id = [
+    mesh.id,
+    materialSlotName ?? "default",
+    layer,
+    texture.id,
+    preview?.previewId ?? "metadata"
+  ].join("|");
+  return {
+    dataUrl: preview?.dataUrl ?? null,
+    evidence,
+    id,
+    layer,
+    materialSlotName,
+    meshAssetId: mesh.id,
+    meshLabel: mesh.label,
+    mimeType: preview?.mimeType ?? null,
+    textureAssetId: texture.id,
+    textureLabel: texture.label,
+    textureObjectPath: texture.objectPath,
+    texturePackagePath: texture.packagePath,
+    texturePreviewId: preview?.previewId ?? null
+  };
+}
+
+async function readTexturePreviewData(
+  texture: CreatorAssetIndexEntry,
+  previewId: string | null | undefined,
+  index: RuntimeAssetIndex
+): Promise<TexturePreviewData | null> {
+  const previews = (index.previewsByAssetId.get(texture.id) ?? []).filter(
+    (preview) =>
+      preview.kind === "image" &&
+      ["generated", "userOwned"].includes(preview.source)
+  );
+  const preview = previewId
+    ? previews.find((candidate) => candidate.id === previewId) ?? null
+    : previews[0] ?? null;
+  if (!preview) {
+    return null;
+  }
+  const mimeType = texturePreviewMimeType(preview.payloadPath);
+  if (!mimeType) {
+    return null;
+  }
+  const record = packageRecordForAsset(texture, index);
+  if (!record) {
+    return null;
+  }
+
+  const previewPath = normalizeArchivePath(preview.payloadPath);
+  const payloadRoot = path.resolve(record.mod.installPath, "payload");
+  const filePath = path.resolve(record.mod.installPath, previewPath);
+  if (!isPathInside(payloadRoot, filePath)) {
+    return null;
+  }
+  const fileStat = await stat(filePath).catch(() => null);
+  if (!fileStat?.isFile() || fileStat.size > MAX_TEXTURE_PREVIEW_BYTES) {
+    return null;
+  }
+  const content = await readFile(filePath).catch(() => null);
+  if (!content) {
+    return null;
+  }
+  return {
+    dataUrl: `data:${mimeType};base64,${content.toString("base64")}`,
+    mimeType,
+    previewId: preview.id
+  };
+}
+
+function texturePreviewMimeType(payloadPath: string): string | null {
+  const extension = path.posix
+    .extname(normalizeArchivePath(payloadPath))
+    .toLowerCase();
+  if (extension === ".png") {
+    return "image/png";
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return "image/jpeg";
+  }
+  if (extension === ".webp") {
+    return "image/webp";
+  }
+  return null;
+}
+
+function textureBindingMatchesMesh(
+  binding: IndexedCreatorTextureBinding,
+  mesh: CreatorAssetIndexEntry
+): boolean {
+  return [
+    binding.meshAssetId === mesh.id,
+    binding.meshAssetId
+      ? mesh.id.endsWith(`:${binding.meshAssetId}`)
+      : false,
+    sameUnrealPath(binding.meshObjectPath, mesh.objectPath),
+    sameUnrealPath(binding.meshPackagePath, mesh.packagePath),
+    sameUnrealPath(binding.meshVirtualPath, mesh.virtualPath)
+  ].some(Boolean);
+}
+
+function resolveTextureBindingAsset(
+  binding: IndexedCreatorTextureBinding,
+  index: RuntimeAssetIndex
+): CreatorAssetIndexEntry | null {
+  const candidates = [
+    binding.textureAssetId
+      ? index.entriesById.get(binding.textureAssetId) ?? null
+      : null,
+    binding.textureAssetId
+      ? index.entriesById.get(
+          `asset:${packageKeyOf(binding.packageId, binding.packageVersion)}:${binding.textureAssetId}`
+        ) ?? null
+      : null,
+    ...entriesForTexturePaths(index, {
+      objectPath: binding.textureObjectPath,
+      packagePath: binding.texturePackagePath,
+      virtualPath: binding.textureVirtualPath
+    })
+  ].filter((entry): entry is CreatorAssetIndexEntry => Boolean(entry));
+
+  return preferredTextureEntry(candidates);
+}
+
+function textureDependenciesForMesh(
+  mesh: CreatorAssetIndexEntry,
+  index: RuntimeAssetIndex
+): CreatorAssetDependency[] {
+  return mesh.source === "baseGameMap"
+    ? baseGameMeshDependenciesForAsset(mesh, index)
+    : index.dependenciesByAssetId.get(mesh.id) ?? [];
+}
+
+function resolveTextureDependencyAsset(
+  dependency: CreatorAssetDependency,
+  index: RuntimeAssetIndex
+): CreatorAssetIndexEntry | null {
+  const candidates = [
+    dependency.toAssetId
+      ? index.entriesById.get(dependency.toAssetId) ?? null
+      : null,
+    ...entriesForTexturePaths(index, {
+      objectPath: dependency.toObjectPath ?? dependency.objectPath,
+      packagePath: dependency.toPackagePath ?? dependency.packagePath,
+      virtualPath: dependency.toVirtualPath
+    })
+  ].filter((entry): entry is CreatorAssetIndexEntry => Boolean(entry));
+
+  return preferredTextureEntry(candidates);
+}
+
+function textureHintsForMesh(
+  mesh: CreatorAssetIndexEntry,
+  hints: CreatorViewportTextureHint[]
+): CreatorViewportTextureHint[] {
+  return hints.filter((hint) => hint.meshAssetId === mesh.id);
+}
+
+function texturesForViewportHint(
+  hint: CreatorViewportTextureHint,
+  index: RuntimeAssetIndex
+): CreatorAssetIndexEntry[] {
+  const explicitTextures = hint.dependencyPaths
+    .flatMap((dependencyPath) =>
+      entriesForTexturePaths(index, {
+        objectPath: dependencyPath,
+        packagePath: dependencyPath,
+        virtualPath: dependencyPath
+      })
+    )
+    .filter(isTexture2DAsset);
+  const materialTextures = hint.materialPath
+    ? index.entries.filter(
+        (entry) =>
+          isTexture2DAsset(entry) &&
+          textureMatchesMaterialPath(entry, hint.materialPath)
+      )
+    : [];
+  const byId = new Map<string, CreatorAssetIndexEntry>();
+  [...explicitTextures, ...materialTextures]
+    .sort(
+      (left, right) =>
+        textureEntryRank(right) - textureEntryRank(left) ||
+        left.label.localeCompare(right.label)
+    )
+    .forEach((entry) => byId.set(entry.id, entry));
+  return [...byId.values()];
+}
+
+function textureMatchesMaterialPath(
+  texture: CreatorAssetIndexEntry,
+  materialPath: string | null
+): boolean {
+  if (!materialPath) {
+    return false;
+  }
+  const texturePath = texture.objectPath ?? texture.packagePath ?? texture.label;
+  const materialScope = unrealAssetFamilyScope(materialPath);
+  const textureScope = unrealAssetFamilyScope(texturePath);
+  if (!materialScope || !textureScope || materialScope !== textureScope) {
+    return false;
+  }
+  const materialStem = materialStemKey(materialPath);
+  const textureStem = textureStemKey(texturePath);
+  return Boolean(
+    materialStem &&
+      textureStem &&
+      (materialStem === textureStem ||
+        materialStem.includes(textureStem) ||
+        textureStem.includes(materialStem))
+  );
+}
+
+function unrealAssetFamilyScope(value: string): string | null {
+  const normalized = normalizeUnrealPath(value).toLowerCase();
+  const typedIndex = normalized.search(/\/(materials?|textures?)\//);
+  return typedIndex > 0 ? normalized.slice(0, typedIndex) : null;
+}
+
+function materialStemKey(value: string): string {
+  return assetStemKey(value).replace(/^(m|mi|mat|material)_/, "");
+}
+
+function textureStemKey(value: string): string {
+  return assetStemKey(value)
+    .replace(/^(t|tex|texture)_/, "")
+    .replace(
+      /_(d|diff|diffuse|albedo|basecolor|bc|n|normal|lm|lightmap|orm|m|mask|r|roughness|metallic|ao|emissive|e)$/,
+      ""
+    );
+}
+
+function assetStemKey(value: string): string {
+  return path.posix
+    .basename(normalizeUnrealPath(value).split(".")[0])
+    .toLowerCase();
+}
+
+function entriesForTexturePaths(
+  index: RuntimeAssetIndex,
+  paths: {
+    objectPath?: string | null;
+    packagePath?: string | null;
+    virtualPath?: string | null;
+  }
+): CreatorAssetIndexEntry[] {
+  const targetKey = targetKeyFromPaths(
+    paths.objectPath ?? null,
+    paths.packagePath ?? null,
+    paths.virtualPath ?? null
+  );
+  const entries = targetKey ? index.entriesByTargetKey.get(targetKey) ?? [] : [];
+  return [
+    ...entries,
+    ...index.entries.filter(
+      (entry) =>
+        sameUnrealPath(paths.objectPath, entry.objectPath) ||
+        sameUnrealPath(paths.packagePath, entry.packagePath) ||
+        sameUnrealPath(paths.virtualPath, entry.virtualPath)
+    )
+  ];
+}
+
+function layerForTexturePath(
+  value: string | null | undefined
+): CreatorViewportTextureLayer {
+  const normalized = assetStemKey(value ?? "");
+  if (/(^|_)(n|normal)(_|$)/.test(normalized)) {
+    return "normal";
+  }
+  if (/(^|_)(lm|lightmap)(_|$)/.test(normalized)) {
+    return "lightMap";
+  }
+  if (/(^|_)(orm|mask|m)(_|$)/.test(normalized)) {
+    return "maskOrm";
+  }
+  if (/(^|_)(e|emissive)(_|$)/.test(normalized)) {
+    return "emissive";
+  }
+  if (/(^|_)(d|diff|diffuse|albedo|basecolor|bc)(_|$)/.test(normalized)) {
+    return "baseColor";
+  }
+  return "unknown";
+}
+
+function preferredTextureEntry(
+  entries: CreatorAssetIndexEntry[]
+): CreatorAssetIndexEntry | null {
+  return (
+    entries
+      .filter(isTexture2DAsset)
+      .sort(
+        (left, right) =>
+          textureEntryRank(right) - textureEntryRank(left) ||
+          left.label.localeCompare(right.label)
+      )[0] ?? null
+  );
+}
+
+function textureEntryRank(entry: CreatorAssetIndexEntry): number {
+  return (
+    (entry.conflictState === "winner" ? 8 : 0) +
+    (entry.activeProfileEnabled ? 4 : 0) +
+    (entry.source === "installedPackage" ? 2 : 0) +
+    (entry.modUses === "replacement" ? 1 : 0)
+  );
+}
+
+function layerForTextureRelation(
+  relation: string
+): CreatorViewportTextureLayer | null {
+  const normalized = relation.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (
+    ["basecolor", "albedo", "diffuse", "colormap", "basemap"].includes(
+      normalized
+    )
+  ) {
+    return "baseColor";
+  }
+  if (["normal", "normalmap"].includes(normalized)) {
+    return "normal";
+  }
+  if (["lightmap", "lightingmap"].includes(normalized)) {
+    return "lightMap";
+  }
+  if (
+    ["mask", "orm", "occlusionroughnessmetallic", "maskorm"].includes(
+      normalized
+    )
+  ) {
+    return "maskOrm";
+  }
+  if (["emissive", "emissivemap"].includes(normalized)) {
+    return "emissive";
+  }
+  if (["texture", "texture2d", "materialtexture"].includes(normalized)) {
+    return "unknown";
+  }
+  return null;
+}
+
+function isTextureBindableMesh(entry: CreatorAssetIndexEntry): boolean {
+  return entry.assetClass === "StaticMesh" || entry.assetClass === "SkeletalMesh";
+}
+
+function isTexture2DAsset(entry: CreatorAssetIndexEntry): boolean {
+  return entry.assetClass === "Texture2D";
+}
+
+function isViewportCapableAssetClass(assetClass: string | null): boolean {
+  return (
+    assetClass === "StaticMesh" ||
+    assetClass === "SkeletalMesh" ||
+    assetClass === "Skeleton"
+  );
+}
+
+function isSupportedViewportModelPreview(preview: CreatorPreviewAsset): boolean {
+  return (
+    preview.kind === "model" &&
+    ["generated", "userOwned"].includes(preview.source) &&
+    Boolean(supportedModelPreviewFormat(preview))
+  );
+}
+
+function sameUnrealPath(
+  left: string | null | undefined,
+  right: string | null | undefined
+): boolean {
+  return Boolean(
+    left &&
+      right &&
+      normalizeUnrealPath(left).toLowerCase() ===
+        normalizeUnrealPath(right).toLowerCase()
+  );
+}
+
 async function readModelPreview(
   request: CreatorModelPreviewRequest,
   index: RuntimeAssetIndex,
@@ -2594,7 +3146,7 @@ async function readBaseGameModelPreview(
   }
 
   const decoder = options.baseGameMeshDecoder;
-  if (!decoder || !(await isDecoderAvailable(decoder))) {
+  if (!decoder) {
     return CreatorModelPreviewResultSchema.parse({
       status: "unsupported",
       asset,
@@ -3211,6 +3763,28 @@ async function exportCreatorMesh(
 
   const renderAsset = resolved.asset;
   const renderDetail = detailWithAsset(detail, renderAsset);
+  if (!isExportableBaseGameMeshAsset(renderAsset)) {
+    return CreatorMeshExportResultSchema.parse({
+      status: "unsupported",
+      asset: renderAsset,
+      format: request.format,
+      destinationPath,
+      bytesWritten: null,
+      metadata: baseGameModelPreviewMetadata(renderAsset, renderDetail, null, {
+        ...(resolved.probe?.metadata ?? {}),
+        previewSource: "Direct base-game export unsupported"
+      }),
+      problems: [
+        ...(resolved.probe?.problems ?? []),
+        modProblem(
+          "info",
+          "CREATOR_MESH_EXPORT_UNSUPPORTED_ASSET_CLASS",
+          "Only base-game StaticMesh and SkeletalMesh assets can be exported as mesh interchange files.",
+          decoderTechnicalDetail(renderAsset, "resolve-asset", "unsupported asset class")
+        )
+      ]
+    });
+  }
   const cached = options.baseGamePreviewRoot
     ? await readCachedBaseGameModelPreview(
         renderAsset,
@@ -3808,6 +4382,10 @@ function isSupportedBaseGameMeshAsset(asset: CreatorAssetIndexEntry): boolean {
   return isSupportedBaseGameMeshAssetClass(asset.assetClass);
 }
 
+function isExportableBaseGameMeshAsset(asset: CreatorAssetIndexEntry): boolean {
+  return BASE_GAME_MESH_EXPORT_ASSET_CLASSES.has(asset.assetClass ?? "");
+}
+
 function isSupportedBaseGameMeshAssetClass(
   assetClass: string | null | undefined
 ): boolean {
@@ -3878,7 +4456,9 @@ function assetWithBaseGameMeshClass(
     ...asset,
     assetClass,
     viewportState: "viewable",
-    exportState: "exportable"
+    exportState: BASE_GAME_MESH_EXPORT_ASSET_CLASSES.has(assetClass)
+      ? "exportable"
+      : "indexOnly"
   });
 }
 
@@ -3978,6 +4558,19 @@ function packagePayloadModelFormat(
   return MODEL_PREVIEW_FORMATS.has(format)
     ? (format as CreatorMeshExportFormat)
     : null;
+}
+
+interface IndexedCreatorTextureBinding extends CreatorTextureBinding {
+  packageId: string;
+  packageName: string;
+  packageVersion: string;
+  activeProfileEnabled: boolean;
+}
+
+interface TexturePreviewData {
+  dataUrl: string;
+  mimeType: string;
+  previewId: string;
 }
 
 function baseGameCookedPayloadForAsset(
@@ -4675,7 +5268,7 @@ function sourceRank(entry: CreatorAssetIndexEntry): number {
 
 function defaultEligibility(entry: CreatorAssetIndexEntry): CreatorExportEligibility {
   if (entry.source === "baseGameMap") {
-    if (isSupportedBaseGameMeshAsset(entry)) {
+    if (isExportableBaseGameMeshAsset(entry)) {
       return {
         state: "exportable",
         allowedOutputs: [
@@ -4784,6 +5377,9 @@ async function meshExportPlanBlockReason(
     return resolved.probe?.problems?.[0]?.message ?? "Unsupported asset class.";
   }
   const renderAsset = resolved.asset;
+  if (!isExportableBaseGameMeshAsset(renderAsset)) {
+    return "Only base-game StaticMesh and SkeletalMesh assets can be exported as mesh interchange files.";
+  }
   const cached = baseGamePreviewRoot
     ? await findCachedBaseGamePreview(renderAsset, baseGamePreviewRoot)
     : null;
@@ -5100,9 +5696,6 @@ function inferAssetClass(
       if (fileStem.startsWith("sm_")) {
         return "StaticMesh";
       }
-    }
-    if (tags.includes("animation")) {
-      return "AnimSequence";
     }
     if (tags.includes("audio")) {
       return "SoundWave";

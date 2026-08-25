@@ -125,6 +125,12 @@ interface CreatorPackageFixtureOptions {
     format?: "gltf" | "glb" | "obj" | "metadataOnly" | "unknown";
     source?: "userOwned" | "generated" | "derivedMetadata";
   };
+  texturePreview?: {
+    payloadPath: string;
+    content: Buffer;
+    source?: "userOwned" | "generated";
+  };
+  includeUnrelatedTexture?: boolean;
 }
 
 describe("asset registry service", () => {
@@ -338,6 +344,22 @@ describe("asset registry service", () => {
     );
   });
 
+  it("does not mark blend spaces in mesh folders as viewport-capable meshes", async () => {
+    const { service } = await createAssetRegistryFixture({
+      includeMeshRows: true
+    });
+
+    const search = await service.searchAssets({
+      query: "Ankylo_Walk_BS",
+      source: "baseGameMap"
+    });
+
+    expect(search.entries[0]).toMatchObject({
+      assetClass: "BlendSpace",
+      viewportCapable: false
+    });
+  });
+
   it("resolves a single enabled override as the winner", async () => {
     const fixture = await createAssetRegistryFixture();
     await installCreatorPackage(fixture.tempRoot, fixture.modLibraryService, {
@@ -538,6 +560,10 @@ describe("asset registry service", () => {
     const preview = await fixture.service.getModelPreview({
       assetId: "asset:mesh-preview@1.0.0:replacement"
     });
+    const tree = await fixture.service.getAssetTree({
+      query: "T_Target",
+      source: "installedPackage"
+    });
     const baseEntry = await getBaseTargetEntry(fixture.service);
     const basePreview = await fixture.service.getModelPreview({
       assetId: baseEntry.id
@@ -547,6 +573,11 @@ describe("asset registry service", () => {
     expect(preview.model?.format).toBe("obj");
     expect(preview.model?.source).toBe("userOwned");
     expect(preview.model?.dataUrl).toContain("data:text/plain;base64,");
+    expect(
+      tree.nodes.find(
+        (node) => node.assetId === "asset:mesh-preview@1.0.0:replacement"
+      )?.viewportCapable
+    ).toBe(true);
     expect(preview.metadata.skeleton).toBe(
       "/Game/UtahRaptor/Meshes/SKEL_Utah.SKEL_Utah"
     );
@@ -784,29 +815,33 @@ describe("asset registry service", () => {
     ]);
   });
 
-  it("decodes base-game Skeleton previews without a preview-cache entry", async () => {
+  it("decodes base-game Skeleton previews without enabling direct mesh export", async () => {
     const fixture = await createAssetRegistryFixture({
       includeMeshRows: true,
       createPreviewCache: false,
       decoder: fakeMeshDecoder()
     });
-    const search = await fixture.service.searchAssets({
-      query: "SKEL_Target_Skeleton",
-      source: "baseGameMap"
-    });
-    const skeleton = search.entries.find(
-      (candidate) => candidate.assetClass === "Skeleton"
-    );
-    expect(skeleton).toBeDefined();
-
+    const skeleton = await getBaseMeshEntry(fixture.service, "SKEL_Target");
     const preview = await fixture.service.getModelPreview({
-      assetId: skeleton?.id ?? ""
+      assetId: skeleton.id
+    });
+    const exported = await fixture.service.exportMesh({
+      assetId: skeleton.id,
+      format: "gltf",
+      destinationPath: path.join(fixture.tempRoot, "exports", "skeleton.gltf")
     });
 
     expect(preview.status).toBe("available");
     expect(preview.model?.source).toBe("decodedBaseGame");
     expect(preview.model?.format).toBe("gltf");
     expect(preview.metadata.meshType).toBe("skeleton");
+    expect(
+      preview.problems.some((problem) => problem.code.startsWith("AUTHORIZED_"))
+    ).toBe(false);
+    expect(exported.status).toBe("unsupported");
+    expect(exported.problems[0]?.code).toBe(
+      "CREATOR_MESH_EXPORT_UNSUPPORTED_ASSET_CLASS"
+    );
   });
 
   it("uses cached normalized base-game previews when valid and falls back when stale", async () => {
@@ -849,19 +884,12 @@ describe("asset registry service", () => {
       decoder: fakeMeshDecoder()
     });
     const mesh = await getBaseMeshEntry(fixture.service, "SM_Target");
-    const search = await fixture.service.searchAssets({
-      query: "SKEL_Target_Skeleton",
-      source: "baseGameMap"
-    });
-    const skeleton = search.entries.find(
-      (candidate) => candidate.assetClass === "Skeleton"
-    );
-    expect(skeleton).toBeDefined();
+    const skeletalMesh = await getBaseMeshEntry(fixture.service, "SK_Target");
 
     for (const [assetId, format] of [
       [mesh.id, "glb"],
       [mesh.id, "obj"],
-      [skeleton?.id ?? "", "gltf"]
+      [skeletalMesh.id, "glb"]
     ] as const) {
       const destinationPath = path.join(fixture.tempRoot, "exports", `mesh.${format}`);
       const result = await fixture.service.exportMesh({
@@ -938,6 +966,74 @@ describe("asset registry service", () => {
     expect(result.exportedCount).toBe(2);
     expect(parsed.manifest.creatorAssets?.previewAssets).toHaveLength(2);
     expect(parsed.zip.file(result.items[0]?.payloadPath ?? "")).not.toBeNull();
+  });
+
+  it("filters viewport texture candidates to explicit visible mesh bindings", async () => {
+    const {
+      tempRoot: fixtureRoot,
+      modLibraryService,
+      service
+    } = await createAssetRegistryFixture({ includeMeshRows: true });
+
+    await installCreatorPackage(fixtureRoot, modLibraryService, {
+      id: "texture-preview",
+      name: "Texture Preview",
+      pakFileName: "TexturePreview_P.pak",
+      payloadSha256: "c".repeat(64),
+      texturePreview: {
+        payloadPath: "payload/previews/target-base-color.png",
+        content: tinyPng()
+      },
+      includeUnrelatedTexture: true
+    });
+
+    const mesh = await getBaseMeshEntry(service, "SM_Target");
+    const result = await service.getViewportTextureCandidates({
+      visibleAssetIds: [mesh.id]
+    });
+    const empty = await service.getViewportTextureCandidates({
+      visibleAssetIds: []
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      layer: "baseColor",
+      materialSlotName: "Body",
+      meshAssetId: mesh.id,
+      textureLabel: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+      texturePreviewId: "target-base-color"
+    });
+    expect(result.candidates[0]?.dataUrl).toContain("data:image/png;base64,");
+    expect(result.candidates[0]?.textureLabel).not.toContain("Unrelated");
+    expect(empty.candidates).toEqual([]);
+  });
+
+  it("uses decoded material hints for viewport texture candidates", async () => {
+    const { service } = await createAssetRegistryFixture({
+      includeMeshRows: true
+    });
+    const mesh = await getBaseMeshEntry(service, "SM_Target");
+
+    const result = await service.getViewportTextureCandidates({
+      visibleAssetIds: [mesh.id],
+      textureHints: [
+        {
+          dependencyPaths: [],
+          materialPath: "/Game/UtahRaptor/Materials/M_Target.M_Target",
+          materialSlotName: "Body",
+          meshAssetId: mesh.id
+        }
+      ]
+    });
+
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({
+      dataUrl: null,
+      layer: "unknown",
+      materialSlotName: "Body",
+      textureLabel: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+      texturePreviewId: null
+    });
   });
 
   it("returns structured decoder errors for unsupported and corrupt base-game meshes", async () => {
@@ -1107,7 +1203,8 @@ async function getBaseMeshEntry(
   const entry = search.entries.find(
     (candidate) =>
       candidate.assetClass === "StaticMesh" ||
-      candidate.assetClass === "SkeletalMesh"
+      candidate.assetClass === "SkeletalMesh" ||
+      candidate.assetClass === "Skeleton"
   );
   expect(entry).toBeDefined();
   return entry as CreatorAssetIndexEntry;
@@ -1142,6 +1239,13 @@ function testObjModel(): string {
     "v 0.8 -0.8 0",
     "f 1 2 3"
   ].join("\n");
+}
+
+function tinyPng(): Buffer {
+  return Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+    "base64"
+  );
 }
 
 function fakeMeshDecoder(
@@ -1325,6 +1429,7 @@ async function createMapArtifacts(
           "container,Clawed/Content/UtahRaptor/Meshes/SK_Target.uasset,/Game/UtahRaptor/Meshes/SK_Target.SK_Target,Clawed-Windows,.uasset,4096,2222222222222222222222222222222222222222222222222222222222222222,cooked_asset;model_visuals;character_model_animation,Skeletal mesh target",
           "container,Clawed/Content/UtahRaptor/Meshes/SKEL_Target_Skeleton.uasset,/Game/UtahRaptor/Meshes/SKEL_Target_Skeleton.SKEL_Target_Skeleton,Clawed-Windows,.uasset,512,3333333333333333333333333333333333333333333333333333333333333333,cooked_asset;rig_skeleton_physics,Skeleton target",
           "container,Clawed/Content/UtahRaptor/Meshes/PHYS_Target.uasset,/Game/UtahRaptor/Meshes/PHYS_Target.PHYS_Target,Clawed-Windows,.uasset,512,4444444444444444444444444444444444444444444444444444444444444444,cooked_asset;rig_skeleton_physics,Physics target",
+          "container,Clawed/Content/Ankylosaurus/Meshes/Ankylo_Walk_BS.uasset,/Game/Ankylosaurus/Meshes/Ankylo_Walk_BS.Ankylo_Walk_BS,Clawed-Windows.utoc,.uasset,2048,7777777777777777777777777777777777777777777777777777777777777777,cooked_asset;animation,Ankylosaurus blend space",
           "container,Clawed/Content/Stegosaurus_RD/Meshes/SM_Stegosaurus_T_Pose.uasset,/Game/Stegosaurus_RD/Meshes/SM_Stegosaurus_T_Pose.SM_Stegosaurus_T_Pose,Clawed-Windows.utoc,.uasset,1275009,5555555555555555555555555555555555555555555555555555555555555555,cooked_asset;model_visuals;chunk_exportbundledata,Stegosaurus model",
           "container,Clawed/Content/Stegosaurus_RD/Meshes/SKEL_Stegosaurus_T_Pose_Skeleton.uasset,/Game/Stegosaurus_RD/Meshes/SKEL_Stegosaurus_T_Pose_Skeleton.SKEL_Stegosaurus_T_Pose_Skeleton,Clawed-Windows.utoc,.uasset,65432,6666666666666666666666666666666666666666666666666666666666666666,cooked_asset;model_visuals;rig_skeleton_physics;chunk_exportbundledata,Stegosaurus skeleton"
         ]
@@ -1444,7 +1549,7 @@ async function installCreatorPackage(
   const { id, name, pakFileName, payloadSha256 } = options;
   const payloadPath = `payload/Content/Paks/${pakFileName}`;
   const packagePath = path.join(tempRoot, `${id}.clawedmod`);
-  const payloadEntries = [
+  const payloadEntries: Array<{ name: string; content: string | Buffer }> = [
     {
       name: `Content/Paks/${pakFileName}`,
       content: `${id} payload`
@@ -1454,6 +1559,14 @@ async function installCreatorPackage(
           {
             name: options.modelPreview.payloadPath.replace(/^payload\//, ""),
             content: options.modelPreview.content
+          }
+        ]
+      : []),
+    ...(options.texturePreview
+      ? [
+          {
+            name: options.texturePreview.payloadPath.replace(/^payload\//, ""),
+            content: options.texturePreview.content
           }
         ]
       : [])
@@ -1467,7 +1580,12 @@ async function installCreatorPackage(
       conflicts: options.conflicts ?? [],
       loadAfter: options.loadAfter ?? [],
       loadBefore: options.loadBefore ?? [],
-      creatorAssets: creatorAssets(payloadPath, options.modelPreview)
+      creatorAssets: creatorAssets(
+        payloadPath,
+        options.modelPreview,
+        options.texturePreview,
+        options.includeUnrelatedTexture
+      )
     },
     payloadEntries,
     checksumsJsonOverride: {
@@ -1484,7 +1602,9 @@ async function installCreatorPackage(
 
 function creatorAssets(
   payloadPath: string,
-  modelPreview?: CreatorPackageFixtureOptions["modelPreview"]
+  modelPreview?: CreatorPackageFixtureOptions["modelPreview"],
+  texturePreview?: CreatorPackageFixtureOptions["texturePreview"],
+  includeUnrelatedTexture = false
 ): CreatorAssetMetadataV1 {
   return CreatorAssetMetadataV1Schema.parse({
     schemaVersion: 1,
@@ -1510,7 +1630,22 @@ function creatorAssets(
         source: "generated",
         role: "replacement",
         tags: ["texture_material_visuals"]
-      }
+      },
+      ...(includeUnrelatedTexture
+        ? [
+            {
+              id: "unrelated",
+              assetClass: "Texture2D",
+              packagePath: "/Game/UtahRaptor/Textures/T_Unrelated",
+              objectPath:
+                "/Game/UtahRaptor/Textures/T_Unrelated.T_Unrelated",
+              virtualPath: "/Clawed/Base/UtahRaptor/Textures/T_Unrelated",
+              source: "baseGame",
+              role: "support",
+              tags: ["texture_material_visuals"]
+            }
+          ]
+        : [])
     ],
     replacements: [
       {
@@ -1534,36 +1669,63 @@ function creatorAssets(
         evidence: "integration fixture"
       }
     ],
-    previewAssets: modelPreview
+    previewAssets: [
+      ...(modelPreview
+        ? [
+            {
+              id: "mesh-preview",
+              payloadPath: modelPreview.payloadPath,
+              kind: "model",
+              assetClass: "SkeletalMesh",
+              objectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+              source: modelPreview.source ?? "userOwned",
+              format: modelPreview.format ?? "obj",
+              modelRole: "skeletalMesh",
+              skeleton: "/Game/UtahRaptor/Meshes/SKEL_Utah.SKEL_Utah",
+              physicsAsset: "/Game/UtahRaptor/Meshes/PHYS_Utah.PHYS_Utah",
+              materialSlots: [
+                {
+                  name: "Body",
+                  materialPath:
+                    "/Game/UtahRaptor/Materials/M_Utah_Body.M_Utah_Body"
+                }
+              ],
+              lods: [
+                {
+                  index: 0,
+                  triangleCount: 1200,
+                  vertexCount: 700
+                }
+              ],
+              dependencyPaths: [
+                "/Game/UtahRaptor/Materials/M_Utah_Body.M_Utah_Body"
+              ]
+            }
+          ]
+        : []),
+      ...(texturePreview
+        ? [
+            {
+              id: "target-base-color",
+              payloadPath: texturePreview.payloadPath,
+              kind: "image",
+              assetClass: "Texture2D",
+              objectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+              source: texturePreview.source ?? "generated"
+            }
+          ]
+        : [])
+    ],
+    textureBindings: texturePreview
       ? [
           {
-            id: "mesh-preview",
-            payloadPath: modelPreview.payloadPath,
-            kind: "model",
-            assetClass: "SkeletalMesh",
-            objectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
-            source: modelPreview.source ?? "userOwned",
-            format: modelPreview.format ?? "obj",
-            modelRole: "skeletalMesh",
-            skeleton: "/Game/UtahRaptor/Meshes/SKEL_Utah.SKEL_Utah",
-            physicsAsset: "/Game/UtahRaptor/Meshes/PHYS_Utah.PHYS_Utah",
-            materialSlots: [
-              {
-                name: "Body",
-                materialPath:
-                  "/Game/UtahRaptor/Materials/M_Utah_Body.M_Utah_Body"
-              }
-            ],
-            lods: [
-              {
-                index: 0,
-                triangleCount: 1200,
-                vertexCount: 700
-              }
-            ],
-            dependencyPaths: [
-              "/Game/UtahRaptor/Materials/M_Utah_Body.M_Utah_Body"
-            ]
+            id: "target-body-base-color",
+            meshObjectPath: "/Game/UtahRaptor/Meshes/SM_Target.SM_Target",
+            materialSlotName: "Body",
+            layer: "baseColor",
+            textureObjectPath: "/Game/UtahRaptor/Textures/T_Target.T_Target",
+            texturePreviewId: "target-base-color",
+            evidence: "creatorMetadata"
           }
         ]
       : [],

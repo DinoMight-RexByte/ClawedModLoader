@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -102,12 +102,18 @@ describe("SaveBackupRotator package", () => {
     expect(lua).toContain("cmm_backup_saves");
     expect(lua).toContain("SaveBackups");
     expect(lua).toContain("backup-manifest.tsv");
-    expect(lua).toContain("io.popen");
+    expect(lua).toContain("Default__BP_CustomSaveGameObject_C.sav");
+    expect(lua).toContain("capture_hook_values");
+    expect(lua).not.toContain("io.popen");
+    expect(lua).not.toContain("os.execute");
+    expect(lua).not.toContain("dir /b");
     expect(lua).not.toContain("powershell");
     expect(lua).not.toContain("Start-Process");
     expect(readme).toContain("latest three backup snapshots");
+    expect(readme).toContain("does not launch `cmd`, PowerShell, or other helper processes");
     expect(readme).toContain("Does not delete, rename, overwrite, or edit files in the active `SaveGames` folder.");
 
+    const localAppDataRoot = path.join(tempRoot, "local-app-data");
     const storageService = new FakeStorageService(createStorageLayout(tempRoot));
     const modLibraryService = new LocalModLibraryService(
       storageService,
@@ -160,10 +166,15 @@ describe("SaveBackupRotator package", () => {
         new LooseFileDeploymentAdapter()
       ],
       new NullLifecycleLogger(),
-      {},
+      { clawedLocalAppDataRoot: localAppDataRoot },
       new ClawedGameAdapter()
     );
     const deployment = await deploymentService.prepareModdedDeployment(discovery);
+    await expect(
+      stat(path.join(localAppDataRoot, "Clawed", "Saved", "SaveBackups")).then(
+        (info) => info.isDirectory()
+      )
+    ).resolves.toBe(true);
     const runtimeRoot = path.join(
       discovery.gameInstallPath!,
       "Clawed",
@@ -183,6 +194,7 @@ describe("SaveBackupRotator package", () => {
     expect(deployment.manifest?.adapterId).toBe("ue4ss");
     expect(deployedLua).toContain("backup_created");
     expect(deployedLua).toContain("prune_entry");
+    expect(deployedLua).not.toContain("io.popen");
     expect(modsTxt).toContain(`${modId} : 1`);
   });
 });

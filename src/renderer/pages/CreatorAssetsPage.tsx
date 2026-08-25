@@ -1,42 +1,32 @@
 import {
   AlertTriangle,
-  Bone,
   Box,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
-  Circle,
   Clipboard,
-  Cuboid,
   Database,
   Download,
   Eye,
-  EyeOff,
   File,
   FileJson,
   FileSearch,
   Folder,
   FolderOpen,
-  Loader2,
-  Minus,
   Network,
   PackageSearch,
-  PackagePlus,
   Plus,
   RefreshCw,
   ShieldCheck
 } from "lucide-react";
 import type { ReactElement } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect } from "react";
 
 import type {
   CreatorAssetIndexEntry,
   CreatorAssetReportOutput,
   CreatorAssetTreeNode,
   CreatorMeshExportFormat,
-  CreatorMappingsDumpProgress,
-  CreatorMappingsDumpProgressStage,
-  CreatorModelPreviewResult,
   ModProblem
 } from "../../shared/contracts/app";
 import { CreatorModelViewport } from "../components/CreatorModelViewport";
@@ -78,48 +68,6 @@ const meshExportActions: Array<{
   { format: "glb", label: "Export GLB" }
 ];
 
-const mappingProcessSteps: Array<{
-  stage: CreatorMappingsDumpProgressStage;
-  label: string;
-  detail: string;
-}> = [
-  {
-    stage: "checking",
-    label: "Check",
-    detail: "Find Clawed and existing Mappings.usmap."
-  },
-  {
-    stage: "staging",
-    label: "Stage",
-    detail: "Place the temporary UE4SS mapping dump."
-  },
-  {
-    stage: "launching",
-    label: "Launch",
-    detail: "Start Clawed through Steam."
-  },
-  {
-    stage: "waitingForGame",
-    label: "Detect",
-    detail: "Wait for Clawed-Win64-Shipping.exe."
-  },
-  {
-    stage: "waitingForMappings",
-    label: "Dump",
-    detail: "Wait for UE4SS to write Mappings.usmap."
-  },
-  {
-    stage: "closingGame",
-    label: "Close",
-    detail: "Ask Clawed to close without force-killing."
-  },
-  {
-    stage: "restoringVanilla",
-    label: "Restore",
-    detail: "Remove CMM's temporary deployment."
-  }
-];
-
 export function CreatorAssetsPage(): ReactElement {
   const {
     snapshot,
@@ -130,17 +78,20 @@ export function CreatorAssetsPage(): ReactElement {
     detail,
     modelPreview,
     modelBusy,
-    modelError,
-    visibleAssetIds,
-    visibleModelPreviews,
-    visibleModelBusyIds,
-    visibleModelErrors,
     exportPlan,
     meshExport,
     meshPackageExport,
-    mappingsProgress,
-    mappingsDump,
     report,
+    viewportBundle,
+    viewportTextureCandidates,
+    viewportTextureSelections,
+    viewportTextureError,
+    selectedViewportAssetId,
+    viewportCameraState,
+    viewportWindowMode,
+    showSkeletons,
+    stopRotation,
+    viewportLightSettings,
     filters,
     selectedAssetId,
     busy,
@@ -149,68 +100,38 @@ export function CreatorAssetsPage(): ReactElement {
     toggleTreeNode,
     planExport,
     exportMesh,
-    toggleVisibleAsset,
-    clearVisibleModels,
+    addToViewport,
+    addAssetToViewport,
+    clearViewport,
+    openViewportWindow,
+    returnViewportWindow,
+    setViewportItemVisibility,
+    removeViewportItem,
+    selectViewportItem,
+    setShowSkeletons,
+    setStopRotation,
+    setViewportLightSettings,
+    setViewportCameraState,
+    setViewportTextureSelected,
+    planVisibleExport,
     exportVisiblePackage,
-    generateMappings,
     copyReport,
     setFilters
   } = useCreatorAssets();
-  const [dismissedProblemKeys, setDismissedProblemKeys] = useState<Set<string>>(
-    () => new Set()
-  );
-  const visiblePreviews = visibleAssetIds
-    .map((assetId) => visibleModelPreviews[assetId])
-    .filter((item): item is CreatorModelPreviewResult => Boolean(item));
-  const visibleError = Object.values(visibleModelErrors)[0] ?? null;
-  const allProblems = uniqueProblems([
+  const problems = uniqueProblems([
     ...(snapshot?.problems ?? []),
     ...treeProblems,
-    ...(modelPreview?.problems ?? []),
-    ...visiblePreviews.flatMap((preview) => preview.problems),
     ...(report?.problems ?? []),
     ...(exportPlan?.problems ?? []),
     ...(meshExport?.problems ?? []),
-    ...(meshPackageExport?.problems ?? []),
-    ...(mappingsDump?.problems ?? [])
+    ...(meshPackageExport?.problems ?? [])
   ]);
-  const problemKeyList = useMemo(
-    () => allProblems.map(problemKey).join("\n"),
-    [allProblems]
-  );
-  const problems = allProblems.filter(
-    (problem) =>
-      problem.severity === "error" ||
-      !dismissedProblemKeys.has(problemKey(problem))
-  );
-  const clearableWarningCount = allProblems.filter(
-    (problem) =>
-      problem.severity !== "error" &&
-      !dismissedProblemKeys.has(problemKey(problem))
-  ).length;
-  const mappingsRequired = allProblems.some(
-    (problem) => problem.code === "CUE4PARSE_MAPPINGS_REQUIRED"
-  );
-  const showMappingsProgress =
-    mappingsRequired || Boolean(mappingsProgress) || Boolean(mappingsDump);
   const rootNodes = treeNodesByParentId[rootTreeParentId] ?? [];
   const selected = detail?.asset ?? null;
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
-
-  useEffect(() => {
-    const activeKeys = new Set(
-      problemKeyList ? problemKeyList.split("\n") : []
-    );
-    setDismissedProblemKeys((current) => {
-      const next = new Set(
-        [...current].filter((key) => activeKeys.has(key))
-      );
-      return next.size === current.size ? current : next;
-    });
-  }, [problemKeyList]);
 
   return (
     <div className="flex flex-1 flex-col gap-5">
@@ -225,34 +146,16 @@ export function CreatorAssetsPage(): ReactElement {
             active-profile overrides, conflicts, and export-safe reports.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            className="inline-flex h-10 items-center gap-2 rounded-md border border-app-warning/50 px-4 text-sm font-semibold text-app-warning hover:bg-app-warning/15 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-warning disabled:opacity-60"
-            disabled={busy}
-            onClick={() => void generateMappings()}
-            type="button"
-          >
-            <PackagePlus aria-hidden="true" size={18} />
-            Generate Mappings
-          </button>
-          <button
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
-            disabled={busy}
-            onClick={() => void refresh()}
-            type="button"
-          >
-            <RefreshCw aria-hidden="true" size={18} />
-            Refresh
-          </button>
-        </div>
+        <button
+          className="inline-flex h-10 items-center gap-2 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+          disabled={busy}
+          onClick={() => void refresh()}
+          type="button"
+        >
+          <RefreshCw aria-hidden="true" size={18} />
+          Refresh
+        </button>
       </header>
-
-      {showMappingsProgress ? (
-        <MappingsProgressPanel
-          progress={mappingsProgress}
-          required={mappingsRequired}
-        />
-      ) : null}
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <Metric
@@ -337,31 +240,9 @@ export function CreatorAssetsPage(): ReactElement {
 
       {error || problems.length > 0 ? (
         <section className="rounded-lg border border-app-warning/40 bg-app-warning/10 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-2 font-medium text-app-warning">
-              <AlertTriangle aria-hidden="true" size={18} />
-              {error ?? "Creator registry reported warnings."}
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {clearableWarningCount > 0 ? (
-                <button
-                  className="inline-flex h-8 items-center gap-2 rounded-md border border-app-warning/50 px-2 text-xs font-semibold text-app-warning hover:bg-app-warning/15"
-                  onClick={() =>
-                    setDismissedProblemKeys(
-                      new Set(
-                        allProblems
-                          .filter((problem) => problem.severity !== "error")
-                          .map(problemKey)
-                      )
-                    )
-                  }
-                  type="button"
-                >
-                  <CheckCircle2 aria-hidden="true" size={14} />
-                  Clear Warnings
-                </button>
-              ) : null}
-            </div>
+          <div className="flex items-center gap-2 font-medium text-app-warning">
+            <AlertTriangle aria-hidden="true" size={18} />
+            {error ?? "Creator registry reported warnings."}
           </div>
           <div className="mt-3">
             <ProblemDetails problems={problems} />
@@ -403,12 +284,9 @@ export function CreatorAssetsPage(): ReactElement {
                     key={node.id}
                     node={node}
                     nodesByParentId={treeNodesByParentId}
+                    onAddToViewport={addAssetToViewport}
                     onToggle={(nextNode) => void toggleTreeNode(nextNode)}
-                    onVisibilityToggle={(assetId) =>
-                      void toggleVisibleAsset(assetId)
-                    }
                     selectedAssetId={selectedAssetId}
-                    visibleAssetIds={visibleAssetIds}
                   />
                 ))}
               </div>
@@ -428,26 +306,7 @@ export function CreatorAssetsPage(): ReactElement {
                     {selected.label}
                   </h2>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {canShowEntryInViewport(selected) ? (
-                    <button
-                      className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
-                      disabled={busy}
-                      onClick={() => void toggleVisibleAsset(selected.id)}
-                      type="button"
-                    >
-                      {visibleAssetIds.includes(selected.id) ? (
-                        <Minus aria-hidden="true" size={16} />
-                      ) : (
-                        <Plus aria-hidden="true" size={16} />
-                      )}
-                      {visibleAssetIds.includes(selected.id)
-                        ? "Remove From Viewport"
-                        : "Add To Viewport"}
-                    </button>
-                  ) : null}
-                  <StatusPill entry={selected} />
-                </div>
+                <StatusPill entry={selected} />
               </div>
 
               <dl className="grid gap-3 text-sm">
@@ -483,69 +342,34 @@ export function CreatorAssetsPage(): ReactElement {
                 <Detail label="Checksum" mono value={selected.sha256} />
               </dl>
 
-              <div className="grid gap-3 rounded-md border border-app-border bg-app-surfaceRaised p-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="font-semibold">Visible Models</h3>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-bg hover:text-app-text disabled:opacity-60"
-                      disabled={busy || visibleAssetIds.length === 0}
-                      onClick={() => void exportVisiblePackage()}
-                      type="button"
-                    >
-                      <PackagePlus aria-hidden="true" size={16} />
-                      Export Package
-                    </button>
-                    <button
-                      className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-bg hover:text-app-text disabled:opacity-60"
-                      disabled={visibleAssetIds.length === 0}
-                      onClick={clearVisibleModels}
-                      type="button"
-                    >
-                      <EyeOff aria-hidden="true" size={16} />
-                      Clear
-                    </button>
-                  </div>
-                </div>
-                {visibleAssetIds.length ? (
-                  <div className="grid gap-2">
-                    {visibleAssetIds.map((assetId) => {
-                      const preview = visibleModelPreviews[assetId];
-                      const label =
-                        preview?.asset?.label ?? preview?.model?.fileName ?? assetId;
-                      return (
-                        <div
-                          className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded border border-app-border/70 bg-app-bg px-2 py-2 text-sm"
-                          key={assetId}
-                        >
-                          <span className="min-w-0 truncate">{label}</span>
-                          <button
-                            aria-label={`Remove ${label} from viewport`}
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-app-border text-app-muted hover:bg-app-surface hover:text-app-text"
-                            onClick={() => void toggleVisibleAsset(assetId)}
-                            title="Remove from viewport"
-                            type="button"
-                          >
-                            <Minus aria-hidden="true" size={16} />
-                          </button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="text-sm text-app-muted">
-                    No visible models.
-                  </p>
-                )}
-              </div>
-
               <CreatorModelViewport
-                busy={
-                  visibleAssetIds.length ? visibleModelBusyIds.length > 0 : modelBusy
+                busy={false}
+                cameraState={viewportCameraState}
+                error={null}
+                items={viewportBundle}
+                lightSettings={viewportLightSettings}
+                onClear={clearViewport}
+                onCameraStateChange={setViewportCameraState}
+                onLightSettingsChange={setViewportLightSettings}
+                onPopOut={() => void openViewportWindow()}
+                onRemoveItem={removeViewportItem}
+                onReturnToMain={() => void returnViewportWindow("service")}
+                onSelectItem={selectViewportItem}
+                onShowSkeletonsChange={setShowSkeletons}
+                onStopRotationChange={setStopRotation}
+                onTextureSelectionChange={setViewportTextureSelected}
+                onToggleItemVisibility={setViewportItemVisibility}
+                selectedAssetId={selectedViewportAssetId}
+                showSkeletons={showSkeletons}
+                stopRotation={stopRotation}
+                textureCandidates={viewportTextureCandidates}
+                textureError={viewportTextureError}
+                textureSelections={viewportTextureSelections}
+                viewportMode={
+                  viewportWindowMode === "poppedOut"
+                    ? "embeddedHidden"
+                    : "embedded"
                 }
-                error={visibleAssetIds.length ? visibleError : modelError}
-                preview={modelPreview}
-                previews={visibleAssetIds.length ? visiblePreviews : undefined}
               />
 
               <div className="grid gap-3">
@@ -672,6 +496,37 @@ export function CreatorAssetsPage(): ReactElement {
                 <div className="flex flex-wrap gap-2">
                   <button
                     className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
+                    disabled={busy || modelBusy || !selected.viewportCapable}
+                    onClick={() => void addToViewport(selected, modelPreview)}
+                    type="button"
+                  >
+                    <Plus aria-hidden="true" size={16} />
+                    Add to Viewport
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
+                    disabled={
+                      busy || !viewportBundle.some((item) => item.visible)
+                    }
+                    onClick={() => void planVisibleExport()}
+                    type="button"
+                  >
+                    <Download aria-hidden="true" size={16} />
+                    Plan Visible Set
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
+                    disabled={
+                      busy || !viewportBundle.some((item) => item.visible)
+                    }
+                    onClick={() => void exportVisiblePackage()}
+                    type="button"
+                  >
+                    <Download aria-hidden="true" size={16} />
+                    Export Visible Set
+                  </button>
+                  <button
+                    className="inline-flex h-9 items-center gap-2 rounded-md border border-app-border px-3 text-sm font-semibold text-app-muted hover:bg-app-surfaceRaised hover:text-app-text disabled:opacity-60"
                     disabled={busy}
                     onClick={() => void planExport(selected.id, "assetIndex")}
                     type="button"
@@ -762,20 +617,6 @@ export function CreatorAssetsPage(): ReactElement {
                 </div>
               ) : null}
 
-              {mappingsDump ? (
-                <div className="rounded-md border border-app-border bg-app-surfaceRaised p-3 text-sm">
-                  <div className="font-medium">
-                    Mappings: {mappingsDump.status}
-                  </div>
-                  <div className="mt-1 break-words text-app-muted [overflow-wrap:anywhere]">
-                    {mappingsDump.mappingsPath ??
-                      mappingsDump.evidencePath ??
-                      mappingsDump.problems[0]?.message ??
-                      "Mappings generation did not produce a file."}
-                  </div>
-                </div>
-              ) : null}
-
               {report ? (
                 <div className="rounded-md border border-app-border bg-app-surfaceRaised p-3 text-sm">
                   <div className="font-medium">Report: {report.status}</div>
@@ -817,172 +658,6 @@ function Metric({
   );
 }
 
-function MappingsProgressPanel({
-  progress,
-  required
-}: {
-  progress: CreatorMappingsDumpProgress | null;
-  required: boolean;
-}): ReactElement {
-  const message =
-    progress?.message ??
-    (required
-      ? "A Clawed .usmap mapping file is required before cooked Unreal models can be decoded."
-      : "Mappings generation has not started.");
-  const detail =
-    progress?.detail ??
-    progress?.mappingsPath ??
-    progress?.evidencePath ??
-    null;
-  const tone =
-    progress?.status === "failed" || progress?.status === "blocked"
-      ? "text-app-warning"
-      : progress?.status === "done"
-        ? "text-app-success"
-        : "text-app-accent";
-
-  return (
-    <section className="rounded-lg border border-app-border bg-app-surface p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 items-start gap-3">
-          <MappingStepIcon
-            className={`mt-0.5 ${tone}`}
-            state={
-              progress?.status === "failed"
-                ? "failed"
-                : progress?.status === "blocked"
-                  ? "blocked"
-                  : progress?.status === "running"
-                    ? "active"
-                    : progress?.status === "done"
-                      ? "done"
-                      : "pending"
-            }
-          />
-          <div className="min-w-0">
-            <h2 className="font-semibold">Unreal Mappings</h2>
-            <p className="mt-1 break-words text-sm text-app-muted [overflow-wrap:anywhere]">
-              {message}
-            </p>
-            {detail ? (
-              <p className="mt-1 break-words font-mono text-xs text-app-subtle [overflow-wrap:anywhere]">
-                {detail}
-              </p>
-            ) : null}
-          </div>
-        </div>
-        {progress ? (
-          <span className={`rounded bg-app-bg px-2 py-1 text-xs font-semibold ${tone}`}>
-            {progress.status}
-          </span>
-        ) : null}
-      </div>
-      <ol className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-7">
-        {mappingProcessSteps.map((step) => {
-          const state = mappingStepState(step.stage, progress);
-          return (
-            <li
-              className={`min-w-0 rounded-md border p-3 ${
-                state === "active"
-                  ? "border-app-accent/60 bg-app-accent/10"
-                  : state === "failed" || state === "blocked"
-                    ? "border-app-warning/60 bg-app-warning/10"
-                    : state === "done"
-                      ? "border-app-success/50 bg-app-success/10"
-                      : "border-app-border bg-app-surfaceRaised"
-              }`}
-              key={step.stage}
-            >
-              <div className="flex items-center gap-2">
-                <MappingStepIcon state={state} />
-                <span className="truncate text-sm font-semibold">
-                  {step.label}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-app-muted">{step.detail}</p>
-            </li>
-          );
-        })}
-      </ol>
-    </section>
-  );
-}
-
-function MappingStepIcon({
-  className = "",
-  state
-}: {
-  className?: string;
-  state: "active" | "blocked" | "done" | "failed" | "pending";
-}): ReactElement {
-  if (state === "active") {
-    return (
-      <Loader2
-        aria-hidden="true"
-        className={`shrink-0 animate-spin text-app-accent ${className}`}
-        size={16}
-      />
-    );
-  }
-  if (state === "done") {
-    return (
-      <CheckCircle2
-        aria-hidden="true"
-        className={`shrink-0 text-app-success ${className}`}
-        size={16}
-      />
-    );
-  }
-  if (state === "failed" || state === "blocked") {
-    return (
-      <AlertTriangle
-        aria-hidden="true"
-        className={`shrink-0 text-app-warning ${className}`}
-        size={16}
-      />
-    );
-  }
-  return (
-    <Circle
-      aria-hidden="true"
-      className={`shrink-0 text-app-subtle ${className}`}
-      size={16}
-    />
-  );
-}
-
-function mappingStepState(
-  stage: CreatorMappingsDumpProgressStage,
-  progress: CreatorMappingsDumpProgress | null
-): "active" | "blocked" | "done" | "failed" | "pending" {
-  if (!progress) {
-    return "pending";
-  }
-  if (progress.stage === "complete" && progress.status === "done") {
-    return "done";
-  }
-  const currentIndex = mappingProcessSteps.findIndex(
-    (step) => step.stage === progress.stage
-  );
-  const stepIndex = mappingProcessSteps.findIndex((step) => step.stage === stage);
-  if (currentIndex === -1) {
-    return "pending";
-  }
-  if (stepIndex < currentIndex) {
-    return "done";
-  }
-  if (stepIndex > currentIndex) {
-    return "pending";
-  }
-  if (progress.status === "failed") {
-    return "failed";
-  }
-  if (progress.status === "blocked") {
-    return "blocked";
-  }
-  return progress.status === "done" ? "done" : "active";
-}
-
 function SelectField({
   label,
   onChange,
@@ -1016,43 +691,39 @@ function TreeNodeRow({
   expandedNodeIds,
   node,
   nodesByParentId,
+  onAddToViewport,
   onToggle,
-  onVisibilityToggle,
-  selectedAssetId,
-  visibleAssetIds
+  selectedAssetId
 }: {
   busyNodeIds: string[];
   depth?: number;
   expandedNodeIds: string[];
   node: CreatorAssetTreeNode;
   nodesByParentId: Record<string, CreatorAssetTreeNode[]>;
+  onAddToViewport(assetId: string): Promise<void>;
   onToggle(node: CreatorAssetTreeNode): void;
-  onVisibilityToggle(assetId: string): void;
   selectedAssetId: string | null;
-  visibleAssetIds: string[];
 }): ReactElement {
   const expanded = expandedNodeIds.includes(node.id);
   const busy = busyNodeIds.includes(treeParentKey(node.id));
   const children = nodesByParentId[treeParentKey(node.id)] ?? [];
   const selected = node.assetId === selectedAssetId;
-  const viewable = node.kind === "asset" && node.viewportState === "viewable";
-  const visible = Boolean(node.assetId && visibleAssetIds.includes(node.assetId));
 
   return (
     <div>
       <div
-        className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-md text-sm ${
+        className={`grid w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-2 py-2 text-left text-sm ${
           selected
             ? "bg-app-accent/15 text-app-text"
             : "text-app-muted hover:bg-app-surfaceRaised hover:text-app-text"
         }`}
+        style={{ paddingLeft: `${8 + depth * 16}px` }}
       >
         <button
           aria-expanded={node.hasChildren ? expanded : undefined}
           aria-pressed={node.kind === "asset" ? selected : undefined}
-          className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 px-2 py-2 text-left"
+          className="col-span-2 grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
           onClick={() => onToggle(node)}
-          style={{ paddingLeft: `${8 + depth * 16}px` }}
           type="button"
         >
           <span className="flex items-center gap-1">
@@ -1075,37 +746,28 @@ function TreeNodeRow({
               </span>
             ) : null}
           </span>
-          <span className="flex shrink-0 items-center gap-2 text-xs text-app-subtle">
-            {busy ? <span>Loading</span> : null}
-            {node.kind === "asset" ? (
-              <span>{nodeStatusLabel(node)}</span>
-            ) : (
-              <span>{formatNumber(node.childCount)}</span>
-            )}
-          </span>
         </button>
-        {viewable && node.assetId ? (
-          <button
-            aria-label={`${visible ? "Remove" : "Add"} ${node.label} ${
-              visible ? "from" : "to"
-            } viewport`}
-            aria-pressed={visible}
-            className={`mr-1 inline-flex h-8 w-8 items-center justify-center rounded-md border border-app-border ${
-              visible
-                ? "bg-app-accent/15 text-app-accent"
-                : "text-app-muted hover:bg-app-bg hover:text-app-text"
-            }`}
-            onClick={() => onVisibilityToggle(node.assetId as string)}
-            title={visible ? "Remove from viewport" : "Add to viewport"}
-            type="button"
-          >
-            {visible ? (
-              <EyeOff aria-hidden="true" size={16} />
-            ) : (
-              <Eye aria-hidden="true" size={16} />
-            )}
-          </button>
-        ) : null}
+        <span className="flex shrink-0 items-center gap-2 text-xs text-app-subtle">
+          {busy ? <span>Loading</span> : null}
+          {node.kind === "asset" ? (
+            <>
+              {node.viewportCapable && node.assetId ? (
+                <button
+                  aria-label={`Add ${node.label} to viewport`}
+                  className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-app-border text-app-muted hover:bg-app-surface hover:text-app-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+                  onClick={() => void onAddToViewport(node.assetId ?? "")}
+                  title="Add to viewport"
+                  type="button"
+                >
+                  <Eye aria-hidden="true" size={15} />
+                </button>
+              ) : null}
+              <span>{nodeStatusLabel(node)}</span>
+            </>
+          ) : (
+            <span>{formatNumber(node.childCount)}</span>
+          )}
+        </span>
       </div>
       {expanded && children.length ? (
         <div className="grid gap-1">
@@ -1117,10 +779,9 @@ function TreeNodeRow({
               key={child.id}
               node={child}
               nodesByParentId={nodesByParentId}
+              onAddToViewport={onAddToViewport}
               onToggle={onToggle}
-              onVisibilityToggle={onVisibilityToggle}
               selectedAssetId={selectedAssetId}
-              visibleAssetIds={visibleAssetIds}
             />
           ))}
         </div>
@@ -1144,13 +805,6 @@ function TreeIcon({
       <FolderOpen aria-hidden="true" size={16} />
     ) : (
       <Folder aria-hidden="true" size={16} />
-    );
-  }
-  if (node.viewportState === "viewable") {
-    return node.assetClass === "Skeleton" ? (
-      <Bone aria-hidden="true" size={16} />
-    ) : (
-      <Cuboid aria-hidden="true" size={16} />
     );
   }
   return <File aria-hidden="true" size={16} />;
@@ -1273,35 +927,21 @@ function sourceLocation(entry: CreatorAssetIndexEntry): string {
   );
 }
 
-function canShowEntryInViewport(entry: CreatorAssetIndexEntry): boolean {
-  return (
-    entry.viewportState === "viewable" ||
-    ["StaticMesh", "SkeletalMesh", "Skeleton", "ModelPreview"].includes(
-      entry.assetClass ?? ""
-    ) ||
-    [".obj", ".gltf", ".glb"].includes((entry.extension ?? "").toLowerCase())
-  );
-}
-
 function uniqueProblems(problems: ModProblem[]): ModProblem[] {
   const seen = new Set<string>();
   return problems.filter((problem) => {
-    const key = problemKey(problem);
+    const key = [
+      problem.severity,
+      problem.code,
+      problem.message,
+      problem.technicalDetail ?? ""
+    ].join("\0");
     if (seen.has(key)) {
       return false;
     }
     seen.add(key);
     return true;
   });
-}
-
-function problemKey(problem: ModProblem): string {
-  return [
-    problem.severity,
-    problem.code,
-    problem.message,
-    problem.technicalDetail ?? ""
-  ].join("\0");
 }
 
 function formatNumber(value: number): string {

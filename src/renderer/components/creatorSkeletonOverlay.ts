@@ -1,337 +1,434 @@
 import {
+  Box3,
   BufferGeometry,
   Float32BufferAttribute,
   LineBasicMaterial,
   LineSegments,
-  Matrix4,
-  SkeletonHelper,
   Vector3,
+  type Bone,
+  type Material,
   type Object3D,
-  type SkinnedMesh
+  type SkinnedMesh,
+  type Skeleton
 } from "three";
 
-const minSegmentLengthSq = 1e-10;
+export const skinnedSkeletonOverlayName = "CMM_SkinnedSkeletonOverlay";
+export const skeletonOnlyOverlayName = "CMM_SkeletonOnlyOverlay";
 
-export function createSkeletonOverlays(object: Object3D): Object3D[] {
-  const skeletonMeshes = new Map<SkinnedMesh["skeleton"], SkinnedMesh[]>();
-  object.traverse((child) => {
-    const mesh = child as SkinnedMesh;
-    const skeleton = mesh.skeleton;
-    if (!mesh.isSkinnedMesh || !skeleton) {
-      return;
-    }
-    skeletonMeshes.set(skeleton, [...(skeletonMeshes.get(skeleton) ?? []), mesh]);
-  });
-
-  const overlays: Object3D[] = [];
-  skeletonMeshes.forEach((meshes) => {
-    const overlay = createSkinnedSkeletonOverlay(meshes);
-    if (overlay) {
-      overlays.push(overlay);
-    }
-  });
-
-  if (overlays.length > 0) {
-    return overlays;
-  }
-
-  return hasSkeletonHierarchy(object) ? [new SkeletonHelper(object)] : [];
+interface Vec4Attribute {
+  count: number;
+  getX(index: number): number;
+  getY(index: number): number;
+  getZ(index: number): number;
+  getW(index: number): number;
 }
 
-function createSkinnedSkeletonOverlay(meshes: SkinnedMesh[]): LineSegments | null {
-  const mesh = meshes[0];
-  if (!mesh) {
-    return null;
-  }
-
-  const { bones } = mesh.skeleton;
-  if (bones.length === 0) {
-    return null;
-  }
-
-  const indexes = new Map<Object3D, number>();
-  bones.forEach((bone, index) => indexes.set(bone, index));
-  const visibleBoneIndexes = weightedBoneIndexes(meshes);
-  const source = alignSkeletonSource(
-    createHierarchyPoseSource(mesh, indexes, visibleBoneIndexes),
-    meshes,
-    mesh
-  );
-
-  if (!source) {
-    return null;
-  }
-
-  const positions = sourceLinePositions(source);
-  if (positions.length === 0) {
-    return null;
-  }
-
-  const geometry = new BufferGeometry();
-  geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
-  const material = new LineBasicMaterial({
-    color: "#22d3ee",
-    depthTest: false,
-    depthWrite: false,
-    opacity: 0.95,
-    toneMapped: false,
-    transparent: true
-  });
-  const overlay = new LineSegments(geometry, material);
-  overlay.frustumCulled = false;
-  overlay.matrix = mesh.matrixWorld;
-  overlay.matrixAutoUpdate = false;
-  overlay.name = "CMM_SkinnedSkeletonOverlay";
-  return overlay;
-}
-
-interface SkeletonSource {
-  positions: Vector3[];
-  segments: Array<[number, number]>;
-}
-
-interface WeightedJoint {
-  index: number;
-  position: Vector3;
+interface JointAccumulator {
+  bone: Bone;
+  samples: number;
+  sum: Vector3;
   weight: number;
 }
 
-function createHierarchyPoseSource(
-  mesh: SkinnedMesh,
-  indexes: Map<Object3D, number>,
-  visibleBoneIndexes: Set<number> | null
-): SkeletonSource | null {
-  mesh.updateWorldMatrix(true, true);
-  updateSkeletonWorldMatrices(mesh.skeleton.bones, indexes);
-  const worldToMesh = new Matrix4().copy(mesh.matrixWorld).invert();
-  const boneMatrix = new Matrix4();
-  return createSkeletonSource(mesh, indexes, visibleBoneIndexes, (index, target) => {
-    boneMatrix.multiplyMatrices(worldToMesh, mesh.skeleton.bones[index].matrixWorld);
-    return target.setFromMatrixPosition(boneMatrix);
-  });
+interface SkeletonMeshGroup {
+  meshes: SkinnedMesh[];
+  skeleton: Skeleton;
 }
 
-function createSkeletonSource(
-  mesh: SkinnedMesh,
-  indexes: Map<Object3D, number>,
-  visibleBoneIndexes: Set<number> | null,
-  positionAt: (index: number, target: Vector3) => Vector3
-): SkeletonSource | null {
-  const positions = mesh.skeleton.bones.map((_, index) =>
-    positionAt(index, new Vector3())
-  );
-  const segments: Array<[number, number]> = [];
-  let hasVisibleSegment = false;
-
-  mesh.skeleton.bones.forEach((bone, index) => {
-    const parentIndex = nearestVisibleParentIndex(
-      bone,
-      indexes,
-      visibleBoneIndexes
-    );
-    if (parentIndex === undefined) {
-      return;
-    }
-    if (visibleBoneIndexes && !visibleBoneIndexes.has(index)) {
-      return;
-    }
-
-    const parent = positions[parentIndex];
-    const child = positions[index];
-    if (!isFiniteVector(parent) || !isFiniteVector(child)) {
-      return;
-    }
-
-    hasVisibleSegment ||= parent.distanceToSquared(child) > minSegmentLengthSq;
-    segments.push([parentIndex, index]);
-  });
-
-  if (segments.length === 0 || !hasVisibleSegment) {
-    return null;
-  }
-
-  return { positions, segments };
+export interface CreatorSkeletonOverlayResult {
+  overlayCount: number;
+  overlays: LineSegments[];
+  skeletonOnlyBoneCount: number;
+  skinnedMeshCount: number;
+  weightCentroidCount: number;
 }
 
-function alignSkeletonSource(
-  source: SkeletonSource | null,
-  meshes: SkinnedMesh[],
-  targetMesh: SkinnedMesh
-): SkeletonSource | null {
-  if (!source) {
-    return null;
-  }
-
-  const joints = skinWeightJoints(meshes, targetMesh);
-  if (joints.length === 0) {
-    return source;
-  }
-
-  const positions = source.positions.map((position) => position.clone());
-  joints.forEach((joint) => {
-    positions[joint.index] = joint.position.clone();
-  });
-  return { positions, segments: source.segments };
+export interface CreatorSkeletonOverlayMetrics {
+  centerDeltaRatio: number | null;
+  coverageRatio: number;
+  meanNearestJointDistanceRatio: number | null;
+  overlayCount: number;
+  p90NearestJointDistanceRatio: number | null;
+  skinnedMeshCount: number;
+  weightCentroidCount: number;
 }
 
-function updateSkeletonWorldMatrices(
-  bones: Object3D[],
-  indexes: Map<Object3D, number>
+export function createCreatorSkeletonOverlays(
+  root: Object3D
+): CreatorSkeletonOverlayResult {
+  root.updateMatrixWorld(true);
+  const groups = collectSkeletonMeshGroups(root);
+  const skinned = groups
+    .map((group) => createSkinnedSkeletonOverlay(group))
+    .filter((overlay): overlay is LineSegments => Boolean(overlay));
+  const skeletonOnly =
+    groups.length === 0 ? createSkeletonOnlyOverlay(root) : null;
+  const overlays = skeletonOnly ? [...skinned, skeletonOnly.overlay] : skinned;
+  return {
+    overlayCount: overlays.length,
+    overlays,
+    skeletonOnlyBoneCount: skeletonOnly?.boneCount ?? 0,
+    skinnedMeshCount: groups.reduce(
+      (total, group) => total + group.meshes.length,
+      0
+    ),
+    weightCentroidCount: skinned.reduce(
+      (total, overlay) => total + Number(overlay.userData.weightCentroidCount ?? 0),
+      0
+    )
+  };
+}
+
+export function setCreatorSkeletonOverlaysVisible(
+  overlays: Object3D[],
+  visible: boolean
 ): void {
-  bones.forEach((bone) => {
-    if (!bone.parent || !indexes.has(bone.parent)) {
-      bone.updateWorldMatrix(true, true);
-    }
+  overlays.forEach((overlay) => {
+    overlay.visible = visible;
   });
 }
 
-function nearestVisibleParentIndex(
-  bone: Object3D,
-  indexes: Map<Object3D, number>,
-  visibleBoneIndexes: Set<number> | null
-): number | undefined {
-  for (let current = bone.parent; current; current = current.parent) {
-    const index = indexes.get(current);
-    if (index === undefined) {
-      return undefined;
-    }
-    if (!visibleBoneIndexes || visibleBoneIndexes.has(index)) {
-      return index;
-    }
-  }
-  return undefined;
+export function disposeCreatorSkeletonOverlays(overlays: Object3D[]): void {
+  overlays.forEach((overlay) => {
+    overlay.parent?.remove(overlay);
+    overlay.traverse((object) => {
+      const disposable = object as Object3D & {
+        geometry?: { dispose(): void };
+        material?: Material | Material[];
+      };
+      disposable.geometry?.dispose();
+      const materials = disposable.material
+        ? Array.isArray(disposable.material)
+          ? disposable.material
+          : [disposable.material]
+        : [];
+      materials.forEach((material) => material.dispose());
+    });
+  });
 }
 
-function weightedBoneIndexes(meshes: SkinnedMesh[]): Set<number> | null {
-  const used = new Set<number>();
-
-  meshes.forEach((mesh) => {
-    const skinIndex = mesh.geometry.getAttribute("skinIndex");
-    const skinWeight = mesh.geometry.getAttribute("skinWeight");
-    if (!skinIndex || !skinWeight) {
+export function collectSkinnedWorldVertices(root: Object3D): Vector3[] {
+  const vertices: Vector3[] = [];
+  root.updateMatrixWorld(true);
+  root.traverse((object) => {
+    if (!isSkinnedMesh(object)) {
       return;
     }
-
-    for (let vertexIndex = 0; vertexIndex < skinIndex.count; vertexIndex++) {
-      for (let influence = 0; influence < 4; influence++) {
-        if (attributeComponent(skinWeight, vertexIndex, influence) <= 0) {
-          continue;
-        }
-        used.add(Math.trunc(attributeComponent(skinIndex, vertexIndex, influence)));
-      }
+    object.updateMatrixWorld(true);
+    object.skeleton.update();
+    const position = object.geometry.getAttribute("position");
+    if (!position) {
+      return;
+    }
+    const vertex = new Vector3();
+    for (let index = 0; index < position.count; index += 1) {
+      vertex.fromBufferAttribute(position, index);
+      object.applyBoneTransform(index, vertex);
+      object.localToWorld(vertex);
+      vertices.push(vertex.clone());
     }
   });
-
-  return used.size > 0 ? used : null;
+  return vertices;
 }
 
-function sourceLinePositions(source: SkeletonSource): number[] {
-  const positions: number[] = [];
-  source.segments.forEach(([parentIndex, childIndex]) => {
-    const parent = source.positions[parentIndex];
-    const child = source.positions[childIndex];
-    positions.push(parent.x, parent.y, parent.z, child.x, child.y, child.z);
+export function measureCreatorSkeletonOverlay(
+  root: Object3D,
+  overlays: Object3D[]
+): CreatorSkeletonOverlayMetrics {
+  const meshVertices = collectSkinnedWorldVertices(root);
+  const overlayVertices = collectOverlayVertices(overlays);
+  const skeletonGroups = collectSkeletonMeshGroups(root);
+  const overlayCount = overlays.length;
+  const weightCentroidCount = overlays.reduce(
+    (total, overlay) => total + Number(overlay.userData.weightCentroidCount ?? 0),
+    0
+  );
+
+  if (!meshVertices.length || !overlayVertices.length) {
+    return {
+      centerDeltaRatio: null,
+      coverageRatio: 0,
+      meanNearestJointDistanceRatio: null,
+      overlayCount,
+      p90NearestJointDistanceRatio: null,
+      skinnedMeshCount: skeletonGroups.reduce(
+        (total, group) => total + group.meshes.length,
+        0
+      ),
+      weightCentroidCount
+    };
+  }
+
+  const meshBox = new Box3().setFromPoints(meshVertices);
+  const overlayBox = new Box3().setFromPoints(overlayVertices);
+  const diagonal = Math.max(meshBox.getSize(new Vector3()).length(), 1);
+  const meshCenter = meshBox.getCenter(new Vector3());
+  const overlayCenter = overlayBox.getCenter(new Vector3());
+  const expandedMeshBox = meshBox.clone().expandByScalar(diagonal * 0.05);
+  const nearestDistances = meshVertices.map(
+    (vertex) => nearestDistance(vertex, overlayVertices) / diagonal
+  );
+  nearestDistances.sort((left, right) => left - right);
+
+  return {
+    centerDeltaRatio: meshCenter.distanceTo(overlayCenter) / diagonal,
+    coverageRatio:
+      overlayVertices.filter((vertex) => expandedMeshBox.containsPoint(vertex))
+        .length / overlayVertices.length,
+    meanNearestJointDistanceRatio:
+      nearestDistances.reduce((total, distance) => total + distance, 0) /
+      nearestDistances.length,
+    overlayCount,
+    p90NearestJointDistanceRatio:
+      nearestDistances[Math.floor((nearestDistances.length - 1) * 0.9)] ?? null,
+    skinnedMeshCount: skeletonGroups.reduce(
+      (total, group) => total + group.meshes.length,
+      0
+    ),
+    weightCentroidCount
+  };
+}
+
+function collectSkeletonMeshGroups(root: Object3D): SkeletonMeshGroup[] {
+  const groups = new Map<string, SkeletonMeshGroup>();
+  root.traverse((object) => {
+    if (!isSkinnedMesh(object)) {
+      return;
+    }
+    const key = object.skeleton.uuid;
+    const group = groups.get(key);
+    if (group) {
+      group.meshes.push(object);
+    } else {
+      groups.set(key, { meshes: [object], skeleton: object.skeleton });
+    }
   });
-  return positions;
+  return [...groups.values()];
 }
 
-function skinWeightJoints(
+function createSkinnedSkeletonOverlay({
+  meshes,
+  skeleton
+}: SkeletonMeshGroup): LineSegments | null {
+  const joints = collectWeightedJoints(meshes, skeleton);
+  const boneIndexes = new Map<Bone, number>();
+  skeleton.bones.forEach((bone, index) => boneIndexes.set(bone, index));
+  const positions: number[] = [];
+
+  [...joints.entries()]
+    .sort(([left], [right]) => left - right)
+    .forEach(([, joint]) => {
+      const parentIndex = nearestWeightedParentIndex(
+        joint.bone,
+        boneIndexes,
+        joints
+      );
+      if (parentIndex === null) {
+        return;
+      }
+      const parent = joints.get(parentIndex);
+      if (!parent) {
+        return;
+      }
+      const from = joint.sum.clone().divideScalar(joint.weight);
+      const to = parent.sum.clone().divideScalar(parent.weight);
+      if (from.distanceToSquared(to) <= 1e-10) {
+        return;
+      }
+      positions.push(from.x, from.y, from.z, to.x, to.y, to.z);
+    });
+
+  if (!positions.length) {
+    return null;
+  }
+
+  const overlay = createLineOverlay(
+    positions,
+    skinnedSkeletonOverlayName,
+    "#facc15"
+  );
+  overlay.userData.kind = "skinned";
+  overlay.userData.skinnedMeshCount = meshes.length;
+  overlay.userData.weightCentroidCount = joints.size;
+  overlay.userData.skeletonUuid = skeleton.uuid;
+  return overlay;
+}
+
+function collectWeightedJoints(
   meshes: SkinnedMesh[],
-  targetMesh: SkinnedMesh
-): WeightedJoint[] {
-  const joints = new Map<number, WeightedJoint>();
-  const worldToTarget = new Matrix4().copy(targetMesh.matrixWorld).invert();
-  const meshToTarget = new Matrix4();
+  skeleton: Skeleton
+): Map<number, JointAccumulator> {
+  const joints = new Map<number, JointAccumulator>();
   const vertex = new Vector3();
 
   meshes.forEach((mesh) => {
+    mesh.updateMatrixWorld(true);
+    mesh.skeleton.update();
     const position = mesh.geometry.getAttribute("position");
-    const skinIndex = mesh.geometry.getAttribute("skinIndex");
-    const skinWeight = mesh.geometry.getAttribute("skinWeight");
+    const skinIndex = mesh.geometry.getAttribute("skinIndex") as
+      | Vec4Attribute
+      | undefined;
+    const skinWeight = mesh.geometry.getAttribute("skinWeight") as
+      | Vec4Attribute
+      | undefined;
     if (!position || !skinIndex || !skinWeight) {
       return;
     }
 
-    const meshJoints = targetMesh.skeleton.bones.map((_, index) => ({
-      index,
-      position: new Vector3(),
-      weight: 0
-    }));
-    mesh.updateWorldMatrix(true, false);
-    meshToTarget.multiplyMatrices(worldToTarget, mesh.matrixWorld);
-    for (let vertexIndex = 0; vertexIndex < position.count; vertexIndex++) {
-      vertex.fromBufferAttribute(position, vertexIndex);
-      mesh.applyBoneTransform(vertexIndex, vertex);
-      vertex.applyMatrix4(meshToTarget);
-      for (let influence = 0; influence < 4; influence++) {
-        const weight = attributeComponent(skinWeight, vertexIndex, influence);
-        if (weight <= 0) {
+    const count = Math.min(position.count, skinIndex.count, skinWeight.count);
+    for (let index = 0; index < count; index += 1) {
+      vertex.fromBufferAttribute(position, index);
+      mesh.applyBoneTransform(index, vertex);
+      mesh.localToWorld(vertex);
+      for (let channel = 0; channel < 4; channel += 1) {
+        const weight = readVec4(skinWeight, index, channel);
+        const boneIndex = Math.trunc(readVec4(skinIndex, index, channel));
+        const bone = skeleton.bones[boneIndex];
+        if (weight <= 1e-5 || !bone) {
           continue;
         }
-        const boneIndex = Math.trunc(
-          attributeComponent(skinIndex, vertexIndex, influence)
-        );
-        const joint = meshJoints[boneIndex];
-        if (!joint) {
-          continue;
-        }
-        joint.position.addScaledVector(vertex, weight);
+        const joint = joints.get(boneIndex) ?? {
+          bone,
+          samples: 0,
+          sum: new Vector3(),
+          weight: 0
+        };
+        joint.sum.addScaledVector(vertex, weight);
         joint.weight += weight;
+        joint.samples += 1;
+        joints.set(boneIndex, joint);
       }
     }
-    meshJoints.forEach((joint) => {
-      if (joint.weight <= 0) {
+  });
+
+  return joints;
+}
+
+function nearestWeightedParentIndex(
+  bone: Bone,
+  boneIndexes: Map<Bone, number>,
+  joints: Map<number, JointAccumulator>
+): number | null {
+  let parent = bone.parent;
+  while (parent) {
+    const index = boneIndexes.get(parent as Bone);
+    if (index !== undefined && joints.has(index)) {
+      return index;
+    }
+    parent = parent.parent;
+  }
+  return null;
+}
+
+function createSkeletonOnlyOverlay(
+  root: Object3D
+): { boneCount: number; overlay: LineSegments } | null {
+  const bones: Bone[] = [];
+  root.traverse((object) => {
+    if (isBone(object)) {
+      bones.push(object);
+    }
+  });
+
+  const boneSet = new Set<Bone>(bones);
+  const positions: number[] = [];
+  const from = new Vector3();
+  const to = new Vector3();
+  bones.forEach((bone) => {
+    if (!bone.parent || !boneSet.has(bone.parent as Bone)) {
+      return;
+    }
+    bone.getWorldPosition(from);
+    bone.parent.getWorldPosition(to);
+    if (from.distanceToSquared(to) <= 1e-10) {
+      return;
+    }
+    positions.push(from.x, from.y, from.z, to.x, to.y, to.z);
+  });
+
+  if (!positions.length) {
+    return null;
+  }
+
+  const overlay = createLineOverlay(positions, skeletonOnlyOverlayName, "#67e8f9");
+  overlay.userData.kind = "skeletonOnly";
+  overlay.userData.skeletonOnlyBoneCount = bones.length;
+  return { boneCount: bones.length, overlay };
+}
+
+function createLineOverlay(
+  positions: number[],
+  name: string,
+  color: string
+): LineSegments {
+  const geometry = new BufferGeometry();
+  geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+  const material = new LineBasicMaterial({
+    color,
+    depthTest: false,
+    depthWrite: false,
+    opacity: 0.9,
+    transparent: true
+  });
+  const overlay = new LineSegments(geometry, material);
+  overlay.frustumCulled = false;
+  overlay.name = name;
+  overlay.renderOrder = 10;
+  return overlay;
+}
+
+function collectOverlayVertices(overlays: Object3D[]): Vector3[] {
+  const vertices: Vector3[] = [];
+  overlays.forEach((overlay) => {
+    overlay.updateMatrixWorld(true);
+    overlay.traverse((object) => {
+      if (!(object instanceof LineSegments)) {
         return;
       }
-      const current = joints.get(joint.index);
-      if (!current || joint.weight > current.weight) {
-        joints.set(joint.index, {
-          index: joint.index,
-          position: joint.position.multiplyScalar(1 / joint.weight),
-          weight: joint.weight
-        });
+      const position = object.geometry.getAttribute("position");
+      const vertex = new Vector3();
+      for (let index = 0; index < position.count; index += 1) {
+        vertex.fromBufferAttribute(position, index);
+        object.localToWorld(vertex);
+        vertices.push(vertex.clone());
       }
     });
   });
-
-  return [...joints.values()];
+  return vertices;
 }
 
-function attributeComponent(
-  attribute: {
-    getX(index: number): number;
-    getY(index: number): number;
-    getZ(index: number): number;
-    getW(index: number): number;
-  },
-  index: number,
-  component: number
-): number {
-  if (component === 0) {
+function nearestDistance(point: Vector3, candidates: Vector3[]): number {
+  return Math.sqrt(
+    candidates.reduce(
+      (minimum, candidate) =>
+        Math.min(minimum, point.distanceToSquared(candidate)),
+      Number.POSITIVE_INFINITY
+    )
+  );
+}
+
+function readVec4(attribute: Vec4Attribute, index: number, channel: number): number {
+  if (channel === 0) {
     return attribute.getX(index);
   }
-  if (component === 1) {
+  if (channel === 1) {
     return attribute.getY(index);
   }
-  if (component === 2) {
+  if (channel === 2) {
     return attribute.getZ(index);
   }
   return attribute.getW(index);
 }
 
-function hasSkeletonHierarchy(object: Object3D): boolean {
-  let found = false;
-  object.traverse((child) => {
-    const candidate = child as Object3D & { isBone?: boolean };
-    found ||= Boolean(candidate.isBone);
-  });
-  return found;
+function isSkinnedMesh(object: Object3D): object is SkinnedMesh {
+  const candidate = object as SkinnedMesh;
+  return Boolean(
+    candidate.isSkinnedMesh &&
+      candidate.skeleton?.bones?.length &&
+      candidate.geometry
+  );
 }
 
-function isFiniteVector(value: Vector3): boolean {
-  return (
-    Number.isFinite(value.x) &&
-    Number.isFinite(value.y) &&
-    Number.isFinite(value.z)
-  );
+function isBone(object: Object3D): object is Bone {
+  return Boolean((object as Bone).isBone);
 }

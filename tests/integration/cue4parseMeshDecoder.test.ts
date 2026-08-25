@@ -242,6 +242,7 @@ function asset(
     activeProfileEnabled: false,
     activeProfileOrder: null,
     assetClass: "StaticMesh",
+    viewportCapable: true,
     packagePath: "/Game/Test/SM_Target",
     objectPath: "/Game/Test/SM_Target.SM_Target",
     virtualPath: null,

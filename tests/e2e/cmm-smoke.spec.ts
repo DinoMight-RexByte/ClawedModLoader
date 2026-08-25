@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 const responsiveViewports = [
   { name: "minimum", width: 960, height: 640 },
@@ -72,6 +72,411 @@ async function expectModelViewportRendered(page: Page): Promise<void> {
       })
     )
     .toBeGreaterThan(0);
+}
+
+async function expectSkeletonToggleWorks(page: Page): Promise<void> {
+  const toggle = page.getByLabel("Show skeleton overlay");
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await expect(toggle).toBeChecked();
+}
+
+async function expectViewportLightControlsWork(page: Page): Promise<void> {
+  await expect(page.getByRole("group", { name: "Viewport lights" })).toBeVisible();
+  const even = page.getByLabel("Even viewport light");
+  const topRight = page.getByLabel("Top-right viewport light");
+  const bottomLeft = page.getByLabel("Bottom-left viewport light");
+  await expect(even).toBeChecked();
+  await expect(topRight).not.toBeChecked();
+
+  await topRight.check();
+  await bottomLeft.check();
+  await expect(topRight).toBeChecked();
+  await expect(bottomLeft).toBeChecked();
+
+  await even.uncheck();
+  await expect(even).not.toBeChecked();
+  await even.check();
+  await topRight.uncheck();
+  await bottomLeft.uncheck();
+}
+
+async function expectDiagnosticMaterialPixels(page: Page): Promise<void> {
+  const canvas = page.getByLabel("Model preview");
+  await expect
+    .poll(async () => {
+      const summary = await viewportPixelSummary(canvas);
+      return summary.grey > 30 && summary.magenta > 30;
+    })
+    .toBe(true);
+}
+
+async function expectViewportTextureDropdownWorks(page: Page): Promise<void> {
+  const viewport = page.getByTestId("creator-model-viewport");
+  await viewport.getByText("Textures 1").click();
+  const menu = page.getByRole("group", { name: "Viewport texture layers" });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByText(/T_Utah_Claws_D/)).toBeVisible();
+  await expect(menu.getByText(/T_Unrelated/)).toHaveCount(0);
+
+  const checkbox = menu.getByLabel(/Apply Base Color .*T_Utah_Claws_D/);
+  await checkbox.check();
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("Model preview")
+        .evaluate((node) => (node as HTMLCanvasElement).dataset.textureCandidateIds)
+    )
+    .toContain("base-utah-skeletal-mesh|Claws|baseColor");
+
+  await viewport.getByRole("button", { name: /Hide .*SK_Utah/ }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.stringify((window as any).__lastCreatorViewportTextureRequest)
+      )
+    )
+    .not.toContain("base-utah-skeletal-mesh");
+  await expect
+    .poll(() =>
+      page
+        .getByLabel("Model preview")
+        .evaluate(
+          (node) => (node as HTMLCanvasElement).dataset.textureCandidateIds ?? ""
+        )
+    )
+    .not.toContain("base-utah-skeletal-mesh|Claws|baseColor");
+
+  await viewport.getByRole("button", { name: /^Textures \d+$/ }).click();
+  await expect(page.getByText("No applicable texture layers.")).toBeVisible();
+  await viewport.getByRole("button", { name: /Show .*SK_Utah/ }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.stringify((window as any).__lastCreatorViewportTextureRequest)
+      )
+    )
+    .toContain("base-utah-skeletal-mesh");
+}
+
+async function viewportPixelSummary(
+  canvas: Locator
+): Promise<{ grey: number; magenta: number }> {
+  return canvas.evaluate((node) => {
+    const canvasElement = node as HTMLCanvasElement;
+    const gl =
+      canvasElement.getContext("webgl2") ?? canvasElement.getContext("webgl");
+    if (!gl || canvasElement.width === 0 || canvasElement.height === 0) {
+      return { grey: 0, magenta: 0 };
+    }
+
+    const pixels = new Uint8Array(canvasElement.width * canvasElement.height * 4);
+    gl.readPixels(
+      0,
+      0,
+      canvasElement.width,
+      canvasElement.height,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      pixels
+    );
+
+    let grey = 0;
+    let magenta = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const red = pixels[index];
+      const green = pixels[index + 1];
+      const blue = pixels[index + 2];
+      if (red > 60 && blue > 60 && red > green + 40 && blue > green + 40) {
+        magenta += 1;
+      }
+      if (
+        red > 45 &&
+        red < 245 &&
+        Math.abs(red - green) < 45 &&
+        Math.abs(green - blue) < 45
+      ) {
+        grey += 1;
+      }
+    }
+    return { grey, magenta };
+  });
+}
+
+async function expectViewportPointerControlsWork(page: Page): Promise<void> {
+  const viewport = page.getByTestId("creator-model-viewport");
+  const canvas = viewport.getByLabel("Model preview");
+  const stopRotation = viewport.getByLabel("Stop rotation");
+  const firstItem = viewport.getByRole("button", {
+    name: /Select .*SK_Utah.* in viewport/
+  });
+  const secondItem = viewport.getByRole("button", {
+    name: /Select .*T_Utah_Claws_D.* in viewport/
+  });
+
+  await expect
+    .poll(async () => (await viewportControlState(canvas)).distance)
+    .toBeGreaterThan(0);
+  await expect(stopRotation).not.toBeChecked();
+  await expect(secondItem).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(async () => (await viewportControlState(canvas)).selectedAssetId)
+    .toBe("asset:female-a@1.0.0:target");
+
+  await selectCanvasAsset(page, canvas, "base-utah-skeletal-mesh");
+  await expect(firstItem).toHaveAttribute("aria-pressed", "true");
+  await expect(stopRotation).not.toBeChecked();
+
+  await secondItem.click();
+  await expect(secondItem).toHaveAttribute("aria-pressed", "true");
+  await expect(stopRotation).not.toBeChecked();
+  await secondItem.click({ button: "right" });
+  await expect(stopRotation).not.toBeChecked();
+
+  const beforeZoom = await viewportControlState(canvas);
+  await canvas.hover();
+  await page.mouse.wheel(0, -700);
+  await expect(stopRotation).not.toBeChecked();
+  await expect
+    .poll(async () =>
+      Math.abs((await viewportControlState(canvas)).distance - beforeZoom.distance)
+    )
+    .toBeGreaterThan(0.01);
+
+  const beforeRotate = await viewportControlState(canvas);
+  await dragCanvas(page, canvas, "right", 0.52, 0.48, 0.72, 0.56);
+  await expect(stopRotation).toBeChecked();
+  await expect
+    .poll(async () =>
+      (await viewportControlState(canvas)).position === beforeRotate.position
+    )
+    .toBe(false);
+
+  await stopRotation.uncheck();
+  await expect(stopRotation).not.toBeChecked();
+  const beforePan = await viewportControlState(canvas);
+  await dragCanvas(page, canvas, "middle", 0.52, 0.5, 0.62, 0.6);
+  await expect(stopRotation).toBeChecked();
+  await expect
+    .poll(async () =>
+      (await viewportControlState(canvas)).target === beforePan.target
+    )
+    .toBe(false);
+}
+
+async function expectViewportOutlinerWorks(page: Page): Promise<void> {
+  const viewport = page.getByTestId("creator-model-viewport");
+  const canvas = viewport.getByLabel("Model preview");
+  const outliner = page.getByRole("complementary", {
+    name: "Viewport outliner"
+  });
+  const firstItem = viewport.getByRole("button", {
+    name: /Select .*SK_Utah.* in viewport/
+  });
+  const secondItem = viewport.getByRole("button", {
+    name: /Select .*T_Utah_Claws_D.* in viewport/
+  });
+
+  await expect(outliner).toBeVisible();
+  await firstItem.click();
+  await expect(firstItem).toHaveAttribute("aria-pressed", "true");
+
+  await viewport.getByRole("button", { name: /Hide .*SK_Utah/ }).click();
+  await expect(firstItem).toBeVisible();
+  await expect(firstItem).toHaveAttribute("aria-pressed", "false");
+  await expect(secondItem).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    viewport.getByRole("button", { name: /Show .*SK_Utah/ })
+  ).toBeVisible();
+  await expect
+    .poll(async () => await viewportAssetScreenPoint(canvas, "base-utah-skeletal-mesh"))
+    .toBeNull();
+
+  await page.getByRole("button", { name: "Export Visible Set" }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.stringify((window as any).__lastCreatorExportPlanRequest)
+      )
+    )
+    .toBe(
+      JSON.stringify({
+        assetIds: ["asset:female-a@1.0.0:target"],
+        output: "clawedmod"
+      })
+    );
+
+  await viewport.getByRole("button", { name: /Show .*SK_Utah/ }).click();
+  await expect(
+    viewport.getByRole("button", { name: /Hide .*SK_Utah/ })
+  ).toBeVisible();
+  await expect
+    .poll(async () =>
+      Boolean(await viewportAssetScreenPoint(canvas, "base-utah-skeletal-mesh"))
+    )
+    .toBe(true);
+
+  await firstItem.click();
+  await viewport
+    .getByRole("button", { name: /Remove .*SK_Utah.* from viewport/ })
+    .click();
+  let dialog = page.getByRole("dialog", { name: "Remove viewport model" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(firstItem).toBeVisible();
+
+  await viewport
+    .getByRole("button", { name: /Remove .*SK_Utah.* from viewport/ })
+    .click();
+  dialog = page.getByRole("dialog", { name: "Remove viewport model" });
+  await dialog.getByRole("button", { name: "Remove model" }).click();
+  await expect(firstItem).toBeHidden();
+  await expect(secondItem).toHaveAttribute("aria-pressed", "true");
+
+  await viewport.getByRole("button", { name: "Clear Viewport" }).click();
+  dialog = page.getByRole("dialog", { name: "Clear viewport bundle" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Clear bundle" }).click();
+  await expect(page.getByText("No model added to viewport.")).toBeVisible();
+}
+
+async function expectViewportPopoutControlsWork(page: Page): Promise<void> {
+  const viewport = page.getByTestId("creator-model-viewport");
+  await viewport.getByRole("button", { name: "Pop Out" }).click();
+  await expect(page.getByText("Viewport popped out")).toBeVisible();
+  await expect(page.getByTestId("creator-viewport-popout-placeholder")).toBeVisible();
+  await expect(viewport.getByLabel("Model preview")).toBeHidden();
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__lastCreatorViewportSession?.windowMode)
+    )
+    .toBe("poppedOut");
+
+  await viewport.getByRole("button", { name: "Return to CMM" }).click();
+  await expect(page.getByText("Viewport popped out")).toBeHidden();
+  await expect(viewport.getByLabel("Model preview")).toBeVisible();
+  await expect(viewport.getByLabel("Show skeleton overlay")).toBeChecked();
+  await expect(viewport.getByLabel("Stop rotation")).toBeChecked();
+  await expect(
+    viewport.getByRole("button", {
+      name: /Select .*T_Utah_Claws_D.* in viewport/
+    })
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect
+    .poll(() =>
+      page.evaluate(() => (window as any).__lastCreatorViewportSession?.windowMode)
+    )
+    .toBe("embedded");
+}
+
+async function selectCanvasAsset(
+  page: Page,
+  canvas: Locator,
+  assetId: string
+): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const point = await viewportAssetScreenPoint(canvas, assetId);
+    if (point) {
+      await canvas.click({ position: point });
+      await page.waitForTimeout(80);
+      if ((await viewportControlState(canvas)).selectedAssetId === assetId) {
+        return;
+      }
+    }
+  }
+  const box = await requiredBoundingBox(canvas);
+  for (const xRatio of [0.28, 0.34, 0.4, 0.46]) {
+    await canvas.click({
+      position: { x: box.width * xRatio, y: box.height * 0.5 }
+    });
+    await page.waitForTimeout(80);
+    if ((await viewportControlState(canvas)).selectedAssetId === assetId) {
+      return;
+    }
+  }
+  throw new Error(
+    `Expected canvas selection ${assetId}, got ${JSON.stringify({
+      centers: await viewportAssetScreenPoints(canvas),
+      state: await viewportControlState(canvas)
+    })}`
+  );
+}
+
+async function viewportAssetScreenPoint(
+  canvas: Locator,
+  assetId: string
+): Promise<{ x: number; y: number } | null> {
+  return canvas.evaluate((node, expectedAssetId) => {
+    const value = (node as HTMLCanvasElement).dataset.assetScreenCenters;
+    if (!value) {
+      return null;
+    }
+    const centers = JSON.parse(value) as Record<
+      string,
+      { x: number; y: number }
+    >;
+    return centers[expectedAssetId] ?? null;
+  }, assetId);
+}
+
+async function viewportAssetScreenPoints(
+  canvas: Locator
+): Promise<Record<string, { x: number; y: number }>> {
+  return canvas.evaluate((node) => {
+    const value = (node as HTMLCanvasElement).dataset.assetScreenCenters;
+    return value
+      ? (JSON.parse(value) as Record<string, { x: number; y: number }>)
+      : {};
+  });
+}
+
+async function dragCanvas(
+  page: Page,
+  canvas: Locator,
+  button: "middle" | "right",
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number
+): Promise<void> {
+  const box = await requiredBoundingBox(canvas);
+  await page.mouse.move(box.x + box.width * startX, box.y + box.height * startY);
+  await page.mouse.down({ button });
+  await page.mouse.move(box.x + box.width * endX, box.y + box.height * endY, {
+    steps: 8
+  });
+  await page.mouse.up({ button });
+}
+
+async function requiredBoundingBox(
+  locator: Locator
+): Promise<{ height: number; width: number; x: number; y: number }> {
+  const box = await locator.boundingBox();
+  if (!box) {
+    throw new Error("Expected viewport canvas bounds.");
+  }
+  return box;
+}
+
+async function viewportControlState(
+  canvas: Locator
+): Promise<{
+  distance: number;
+  position: string;
+  selectedAssetId: string;
+  target: string;
+}> {
+  return canvas.evaluate((node) => {
+    const dataset = (node as HTMLCanvasElement).dataset;
+    return {
+      distance: Number(dataset.cameraDistance ?? "0"),
+      position: dataset.cameraPosition ?? "",
+      selectedAssetId: dataset.selectedAssetId ?? "",
+      target: dataset.cameraTarget ?? ""
+    };
+  });
 }
 
 test.beforeEach(async ({ page }) => {
@@ -197,13 +602,27 @@ test.beforeEach(async ({ page }) => {
         "/Game/UtahRaptor/Materials/M_Utah_Claws.M_Utah_Claws"
       ]
     };
+    const creatorTextureDataUrl =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+    const creatorTexturePreview = {
+      id: "female-a-claws-base-color-preview",
+      payloadPath: "payload/previews/female-a-claws.png",
+      kind: "image",
+      assetClass: "Texture2D",
+      objectPath: "/Game/UtahRaptor/Textures/T_Utah_Claws_D.T_Utah_Claws_D",
+      source: "generated"
+    };
     const creatorModelDataUrl = `data:text/plain;base64,${btoa(
       [
-        "o PreviewTriangle",
-        "v 0 0.8 0",
-        "v -0.8 -0.8 0",
-        "v 0.8 -0.8 0",
-        "f 1 2 3"
+        "o DiagnosticFaces",
+        "v -0.7 0.8 0",
+        "v -1.3 -0.8 0",
+        "v -0.1 -0.8 0",
+        "v 0.7 0.8 0",
+        "v 0.1 -0.8 0",
+        "v 1.3 -0.8 0",
+        "f 1 2 3",
+        "f 4 6 5"
       ].join("\n")
     )}`;
     const femaleManifest = {
@@ -270,7 +689,19 @@ test.beforeEach(async ({ page }) => {
             evidence: "E2E fixture"
           }
         ],
-        previewAssets: [creatorModelPreview],
+        previewAssets: [creatorModelPreview, creatorTexturePreview],
+        textureBindings: [
+          {
+            id: "utah-claws-base-color",
+            meshObjectPath: "/Game/UtahRaptor/Meshes/SK_Utah.SK_Utah",
+            materialSlotName: "Claws",
+            layer: "baseColor",
+            textureObjectPath:
+              "/Game/UtahRaptor/Textures/T_Utah_Claws_D.T_Utah_Claws_D",
+            texturePreviewId: creatorTexturePreview.id,
+            evidence: "creatorMetadata"
+          }
+        ],
         importProvenance: [
           {
             sourceKind: "generated",
@@ -373,6 +804,7 @@ test.beforeEach(async ({ page }) => {
       activeProfileEnabled: false,
       activeProfileOrder: null,
       assetClass: "Texture2D",
+      viewportCapable: false,
       packagePath: "/Game/UtahRaptor/Textures/T_Utah_Claws_D",
       objectPath: "/Game/UtahRaptor/Textures/T_Utah_Claws_D.T_Utah_Claws_D",
       virtualPath: "/Clawed/Base/UtahRaptor/Textures/T_Utah_Claws_D",
@@ -394,6 +826,7 @@ test.beforeEach(async ({ page }) => {
       id: "base-utah-skeletal-mesh",
       label: "/Game/UtahRaptor/Meshes/SK_Utah.SK_Utah",
       assetClass: "SkeletalMesh",
+      viewportCapable: true,
       packagePath: "/Game/UtahRaptor/Meshes/SK_Utah",
       objectPath: "/Game/UtahRaptor/Meshes/SK_Utah.SK_Utah",
       virtualPath: "/Clawed/Base/UtahRaptor/Meshes/SK_Utah",
@@ -402,6 +835,16 @@ test.beforeEach(async ({ page }) => {
       modUses: "Base skeletal mesh inspection target",
       exportState: "exportable",
       viewportState: "viewable",
+      conflictState: "none"
+    };
+    const creatorUnrelatedTextureEntry = {
+      ...creatorBaseEntry,
+      id: "base-unrelated-texture",
+      label: "/Game/UtahRaptor/Textures/T_Unrelated.T_Unrelated",
+      packagePath: "/Game/UtahRaptor/Textures/T_Unrelated",
+      objectPath: "/Game/UtahRaptor/Textures/T_Unrelated.T_Unrelated",
+      virtualPath: "/Clawed/Base/UtahRaptor/Textures/T_Unrelated",
+      relativePath: "Clawed/Content/UtahRaptor/Textures/T_Unrelated.uasset",
       conflictState: "none"
     };
     const creatorWinnerEntry = {
@@ -417,6 +860,7 @@ test.beforeEach(async ({ page }) => {
       activeProfileEnabled: true,
       activeProfileOrder: 2,
       assetClass: "Texture2D",
+      viewportCapable: true,
       packagePath: "/Game/UtahRaptor/Textures/T_Utah_Claws_D",
       objectPath: "/Game/UtahRaptor/Textures/T_Utah_Claws_D.T_Utah_Claws_D",
       virtualPath: "/Packages/female-a/1.0.0/Content/Paks/FemaleA_P.pak",
@@ -438,6 +882,7 @@ test.beforeEach(async ({ page }) => {
       id: "payload:female-a@1.0.0:female-a-pak",
       label: "payload/Content/Paks/FemaleA_P.pak",
       source: "packagePayload",
+      viewportCapable: false,
       objectPath: null,
       packagePath: null,
       virtualPath: "/Packages/female-a/1.0.0/Content/Paks/FemaleA_P.pak",
@@ -553,8 +998,53 @@ test.beforeEach(async ({ page }) => {
       creatorWinnerEntry,
       creatorPayloadEntry,
       creatorBaseEntry,
-      creatorBaseMeshEntry
+      creatorBaseMeshEntry,
+      creatorUnrelatedTextureEntry
     ];
+    const creatorViewportItem = (entry: any, previewId: string | null = null) => ({
+      assetClass: entry.assetClass,
+      assetId: entry.id,
+      label: entry.label,
+      previewId,
+      selected: entry.id === creatorWinnerEntry.id,
+      source: entry.source,
+      visible: true
+    });
+    const creatorViewportEventListeners: Array<(event: any) => void> = [];
+    const creatorModelPreviewRequests: string[] = [];
+    (window as any).__creatorModelPreviewRequests = creatorModelPreviewRequests;
+    let creatorViewportSession: any = {
+      cameraState: {
+        distance: 3,
+        position: [0.2, 0.25, 3],
+        target: [0, 0, 0]
+      },
+      items: [
+        creatorViewportItem(creatorBaseMeshEntry),
+        creatorViewportItem(creatorWinnerEntry, creatorModelPreview.id)
+      ],
+      lightSettings: {
+        bottomLeft: false,
+        bottomRight: false,
+        even: true,
+        topLeft: true,
+        topRight: false
+      },
+      selectedAssetId: creatorWinnerEntry.id,
+      showSkeletons: true,
+      stopRotation: false,
+      textureSelections: [],
+      windowMode: "poppedOut"
+    };
+    const setCreatorViewportSession = (session: any, windowMode: string) => {
+      creatorViewportSession = { ...session, windowMode };
+      (window as any).__lastCreatorViewportSession = creatorViewportSession;
+      return creatorViewportSession;
+    };
+    const emitCreatorViewportEvent = (type: string) => {
+      const event = { session: creatorViewportSession, type };
+      creatorViewportEventListeners.forEach((listener) => listener(event));
+    };
     const creatorActiveProfile = () => ({
       id: activeSummary().id,
       name: activeSummary().name,
@@ -674,6 +1164,7 @@ test.beforeEach(async ({ page }) => {
       hasChildren: false,
       childCount: 0,
       assetClass: entry.assetClass,
+      viewportCapable: entry.viewportCapable ?? false,
       packageName: entry.packageName,
       validationState: entry.validationState,
       conflictState: entry.conflictState,
@@ -1720,6 +2211,7 @@ test.beforeEach(async ({ page }) => {
         problems: []
       }),
       getCreatorModelPreview: async ({ assetId }: { assetId: string }) => {
+        creatorModelPreviewRequests.push(assetId);
         const asset =
           creatorEntries().find((entry) => entry.id === assetId) ??
           creatorWinnerEntry;
@@ -1740,6 +2232,12 @@ test.beforeEach(async ({ page }) => {
                 }
               : null,
             metadata: {
+              meshType:
+                asset.assetClass === "SkeletalMesh"
+                  ? "skeletalMesh"
+                  : asset.assetClass === "Skeleton"
+                    ? "skeleton"
+                    : "staticMesh",
               skeleton: available
                 ? "/Game/UtahRaptor/Meshes/SKEL_Utah.SKEL_Utah"
                 : null,
@@ -1814,6 +2312,8 @@ test.beforeEach(async ({ page }) => {
                 }
               : null,
           metadata: {
+            meshType:
+              asset.id === creatorWinnerEntry.id ? "skeletalMesh" : "unknown",
             skeleton:
               asset.id === creatorWinnerEntry.id
                 ? creatorModelPreview.skeleton
@@ -1868,16 +2368,54 @@ test.beforeEach(async ({ page }) => {
           problems: []
         };
       },
+      getCreatorViewportTextureCandidates: async ({
+        visibleAssetIds
+      }: {
+        visibleAssetIds: string[];
+      }) => {
+        (window as any).__lastCreatorViewportTextureRequest = {
+          visibleAssetIds
+        };
+        const candidates = visibleAssetIds.includes(creatorBaseMeshEntry.id)
+          ? [
+              {
+                dataUrl: creatorTextureDataUrl,
+                evidence: [
+                  {
+                    detail: "utah-claws-base-color",
+                    relation: null,
+                    source: "creatorMetadata"
+                  }
+                ],
+                id: `${creatorBaseMeshEntry.id}|Claws|baseColor|${creatorWinnerEntry.id}|${creatorTexturePreview.id}`,
+                layer: "baseColor",
+                materialSlotName: "Claws",
+                meshAssetId: creatorBaseMeshEntry.id,
+                meshLabel: creatorBaseMeshEntry.label,
+                mimeType: "image/png",
+                textureAssetId: creatorWinnerEntry.id,
+                textureLabel: creatorWinnerEntry.label,
+                textureObjectPath: creatorWinnerEntry.objectPath,
+                texturePackagePath: creatorWinnerEntry.packagePath,
+                texturePreviewId: creatorTexturePreview.id
+              }
+            ]
+          : [];
+        return {
+          candidates,
+          generatedAt: now,
+          problems: []
+        };
+      },
       getCreatorExportPlan: async ({
         assetIds,
         output
       }: {
         assetIds: string[];
         output: string;
-      }) => ({
-        status: output === "clawedmod" ? "blocked" : "ready",
-        output,
-        items: assetIds.map((assetId) => {
+      }) => {
+        (window as any).__lastCreatorExportPlanRequest = { assetIds, output };
+        const items = assetIds.map((assetId) => {
           const asset =
             creatorEntries().find((entry) => entry.id === assetId) ??
             creatorWinnerEntry;
@@ -1918,9 +2456,16 @@ test.beforeEach(async ({ page }) => {
                 ? "Base-game content is index-only."
                 : null
           };
-        }),
-        problems: []
-      }),
+        });
+        return {
+          status: items.some((item) => item.status !== "allowed")
+            ? "blocked"
+            : "ready",
+          output,
+          items,
+          problems: []
+        };
+      },
       chooseAndExportCreatorMesh: async ({
         assetId,
         format
@@ -2072,6 +2617,28 @@ test.beforeEach(async ({ page }) => {
           problems: []
         };
       },
+      openCreatorViewportWindow: async (session: any) => {
+        const nextSession = setCreatorViewportSession(session, "poppedOut");
+        emitCreatorViewportEvent("poppedOut");
+        return nextSession;
+      },
+      getCreatorViewportSession: async () => creatorViewportSession,
+      updateCreatorViewportSession: async (session: any) =>
+        setCreatorViewportSession(session, session.windowMode),
+      returnCreatorViewportWindow: async (session: any) => {
+        const nextSession = setCreatorViewportSession(session, "embedded");
+        emitCreatorViewportEvent("returned");
+        return nextSession;
+      },
+      onCreatorViewportWindowEvent: (callback: (event: any) => void) => {
+        creatorViewportEventListeners.push(callback);
+        return () => {
+          const index = creatorViewportEventListeners.indexOf(callback);
+          if (index >= 0) {
+            creatorViewportEventListeners.splice(index, 1);
+          }
+        };
+      },
       restoreCmmChanges: async () => ({
         status: "ok",
         restoredFiles: [],
@@ -2103,6 +2670,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("smoke-tests first run and primary desktop flows", async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto("/");
 
   await expect(page.getByRole("dialog", { name: "First-Run Setup" })).toBeVisible();
@@ -2154,6 +2722,20 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   await page.getByRole("button", { name: "Clear Warnings" }).click();
   await expect(page.getByText("Fixture warning can be cleared.")).toBeHidden();
   await expect(page.getByRole("heading", { name: "Asset Tree" })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => ((window as any).__creatorModelPreviewRequests ?? []).length
+      )
+    )
+    .toBe(0);
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).__lastCreatorViewportTextureRequest ?? null
+      )
+    )
+    .toBeNull();
   await page.getByPlaceholder("Search paths, objects, packages").fill("Utah");
   await expect(
     page.getByRole("button", { name: /T_Utah_Claws_D/ }).first()
@@ -2170,15 +2752,44 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
     .getByRole("button", { name: /SK_Utah/ })
     .first()
     .click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          ((window as any).__creatorModelPreviewRequests ?? []).filter(
+            (assetId: string) => assetId === "base-utah-skeletal-mesh"
+          ).length
+      )
+    )
+    .toBe(0);
+  await page
+    .getByRole("button", { name: /Add .*SK_Utah.* to viewport/ })
+    .click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          ((window as any).__creatorModelPreviewRequests ?? []).filter(
+            (assetId: string) => assetId === "base-utah-skeletal-mesh"
+          ).length
+      )
+    )
+    .toBeGreaterThan(0);
   await expect(
     page.getByText("Direct decoded base-game asset", { exact: true })
   ).toBeVisible();
+  await expect(page.getByText("Active Bundle")).toBeVisible();
+  await expect(
+    page.getByTestId("creator-model-viewport").getByRole("button", {
+      name: /Select .*SK_Utah.* in viewport/
+    })
+  ).toBeVisible();
   await expectModelViewportRendered(page);
-  await page.getByRole("button", { name: "Add To Viewport" }).click();
-  await expect(page.getByText("Visible Models")).toBeVisible();
-  await page.getByRole("button", { name: "Export Package" }).click();
+  await page.getByRole("button", { name: "Plan Visible Set" }).click();
   await expect(page.getByText("Package export: exported")).toBeVisible();
-  await page.getByRole("button", { name: "Clear" }).click();
+  await expectDiagnosticMaterialPixels(page);
+  await expectViewportLightControlsWork(page);
+  await expectSkeletonToggleWorks(page);
   await page
     .getByRole("button", { name: /Clawed Base Game/ })
     .first()
@@ -2219,18 +2830,42 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   await expect(page.getByText("Winner").first()).toBeVisible();
   await expect(page.getByText("Source Location")).toBeVisible();
   await expect(page.getByText("Package Container")).toBeVisible();
-  await expect(page.getByText("Skeleton")).toBeVisible();
+  await page.getByRole("button", { name: "Add to Viewport" }).click();
+  await expect(page.getByLabel("Show skeleton overlay")).toBeVisible();
   await expect(page.getByText("Material Slots")).toBeVisible();
   await expect(
     page
       .getByTestId("creator-model-viewport")
       .getByText("Female Character A 1.0.0")
   ).toBeVisible();
+  await expect(
+    page.getByText("Model preview available: 2 visible models")
+  ).toBeVisible();
   await expectModelViewportRendered(page);
+  await expectViewportPointerControlsWork(page);
   await expect(page.getByText("Dependency Hints")).toBeVisible();
   await expect(page.getByText("Base: present")).toBeVisible();
   await expect(page.getByText("Explicit conflicts: male-character")).toBeVisible();
   await expect(page.getByText("Load after: core-framework")).toBeVisible();
+  await expectViewportTextureDropdownWorks(page);
+  await page.getByRole("button", { name: "Export Visible Set" }).click();
+  await expect(page.getByText("Export plan: blocked")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.stringify((window as any).__lastCreatorExportPlanRequest)
+      )
+    )
+    .toContain("base-utah-skeletal-mesh");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        JSON.stringify((window as any).__lastCreatorExportPlanRequest)
+      )
+    )
+    .toContain("asset:female-a@1.0.0:target");
+  await expectViewportPopoutControlsWork(page);
+  await expectViewportOutlinerWorks(page);
   await page.getByRole("button", { name: "Plan Index Export" }).click();
   await expect(page.getByText("Export plan: ready")).toBeVisible();
   await page.getByRole("button", { name: "Copy Metadata" }).click();
@@ -2572,8 +3207,47 @@ test("runs packaged runtime validation from validation error", async ({
     .toBe(true);
 });
 
+test("renders creator viewport pop-out route with restored session", async ({
+  page
+}) => {
+  test.setTimeout(60_000);
+  await page.goto("/?creatorViewport=popout");
+
+  const viewport = page.getByTestId("creator-model-viewport");
+  await expect(viewport).toBeVisible();
+  await expect(viewport.getByRole("button", { name: "Return to CMM" })).toBeVisible();
+  await expectModelViewportRendered(page);
+  await expect(viewport.getByLabel("Show skeleton overlay")).toBeVisible();
+  await viewport.getByLabel("Show skeleton overlay").uncheck();
+  await expect(viewport.getByText("Viewport metadata")).toBeVisible();
+  await expect(
+    viewport.getByRole("button", { name: /Hide .*SK_Utah/ })
+  ).toBeHidden();
+  await viewport.getByText("Viewport metadata").click();
+  await viewport.getByRole("button", { name: /Hide .*SK_Utah/ }).click();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as any).__lastCreatorViewportSession?.showSkeletons
+      )
+    )
+    .toBe(false);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        Boolean(
+          (window as any).__lastCreatorViewportSession?.items?.find(
+            (item: any) => item.assetId === "base-utah-skeletal-mesh"
+          )?.visible === false
+        )
+      )
+    )
+    .toBe(true);
+});
+
 for (const viewport of responsiveViewports) {
   test(`renders primary pages at ${viewport.name} viewport`, async ({ page }) => {
+    test.setTimeout(60_000);
     await page.setViewportSize({
       height: viewport.height,
       width: viewport.width
@@ -2636,8 +3310,10 @@ for (const viewport of responsiveViewports) {
           .getByRole("button", { name: /T_Utah_Claws_D/ })
           .first()
           .click();
-        await expect(page.getByText("Skeleton")).toBeVisible();
+        await page.getByRole("button", { name: "Add to Viewport" }).click();
+        await expect(page.getByLabel("Show skeleton overlay")).toBeVisible();
         await expectModelViewportRendered(page);
+        await expectSkeletonToggleWorks(page);
         await expect(page.getByText("Dependency Hints")).toBeVisible();
         await expect(page.getByText("Base: present")).toBeVisible();
         await page.getByRole("button", { name: "Copy Validation" }).click();

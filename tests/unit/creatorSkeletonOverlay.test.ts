@@ -1,272 +1,134 @@
+import { describe, expect, it, vi } from "vitest";
 import {
   Bone,
-  BoxGeometry,
   BufferGeometry,
   Float32BufferAttribute,
-  Matrix4,
+  Group,
   MeshBasicMaterial,
-  Object3D,
   Skeleton,
   SkinnedMesh,
-  Uint16BufferAttribute,
-  type LineSegments
+  Uint16BufferAttribute
 } from "three";
-import { describe, expect, it } from "vitest";
 
-import { createSkeletonOverlays } from "../../src/renderer/components/creatorSkeletonOverlay";
+import {
+  collectSkinnedWorldVertices,
+  createCreatorSkeletonOverlays,
+  disposeCreatorSkeletonOverlays,
+  measureCreatorSkeletonOverlay,
+  setCreatorSkeletonOverlaysVisible,
+  skeletonOnlyOverlayName,
+  skinnedSkeletonOverlayName
+} from "../../src/renderer/components/creatorSkeletonOverlay";
 
-describe("creator skeleton overlay", () => {
-  it("builds skinned mesh overlays from the live bone hierarchy", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, 2, 0);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -2, 0)
-    ]);
-    const mesh = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, 0, 2, 0], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    mesh.bind(skeleton, new Matrix4());
+describe("creator skeleton overlays", () => {
+  it("groups material-split skinned meshes sharing one skeleton into one overlay", () => {
+    const { root } = createSkinnedFixture();
 
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
+    const result = createCreatorSkeletonOverlays(root);
+    const position = result.overlays[0]?.geometry.getAttribute("position");
 
-    expect(overlay.name).toBe("CMM_SkinnedSkeletonOverlay");
-    expect(overlay.matrix).toBe(mesh.matrixWorld);
-    expect(positions.getY(0)).toBeCloseTo(0);
-    expect(positions.getY(1)).toBeCloseTo(2);
+    expect(result.overlayCount).toBe(1);
+    expect(result.overlays[0]?.name).toBe(skinnedSkeletonOverlayName);
+    expect(result.skinnedMeshCount).toBe(2);
+    expect(result.weightCentroidCount).toBe(3);
+    expect(position?.count).toBe(4);
+
+    disposeCreatorSkeletonOverlays(result.overlays);
   });
 
-  it("uses live hierarchy joints when inverse bind matrices disagree", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, -2, 0);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -2, 0)
-    ]);
-    const geometry = new BufferGeometry();
-    geometry.setAttribute(
-      "position",
-      new Float32BufferAttribute([0, 0, 0, -0.2, 2, 0, 0.2, 2, 0], 3)
-    );
-    geometry.setAttribute(
-      "skinIndex",
-      new Uint16BufferAttribute([0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4)
-    );
-    geometry.setAttribute(
-      "skinWeight",
-      new Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4)
-    );
-    const mesh = new SkinnedMesh(geometry, new MeshBasicMaterial());
-    mesh.bind(skeleton, new Matrix4());
+  it("anchors skinned overlays to skinned world vertices instead of raw bone origins", () => {
+    const { root } = createSkinnedFixture();
 
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
+    const result = createCreatorSkeletonOverlays(root);
+    const vertices = collectSkinnedWorldVertices(root);
+    const metrics = measureCreatorSkeletonOverlay(root, result.overlays);
+    const position = result.overlays[0]?.geometry.getAttribute("position");
+    const xs = Array.from({ length: position?.count ?? 0 }, (_, index) =>
+      position?.getX(index) ?? 0
+    );
 
-    expect(positions.getY(0)).toBeCloseTo(0);
-    expect(positions.getY(1)).toBeCloseTo(-2);
+    expect(vertices.length).toBe(6);
+    expect(Math.max(...xs.map((value) => Math.abs(value)))).toBeLessThan(0.01);
+    expect(metrics.centerDeltaRatio).not.toBeNull();
+    expect(metrics.centerDeltaRatio ?? 1).toBeLessThan(0.01);
+    expect(metrics.coverageRatio).toBe(1);
+
+    disposeCreatorSkeletonOverlays(result.overlays);
   });
 
-  it("corrects mirrored live hierarchy axes against skin-weighted geometry", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, -2, -1);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, 2, 1)
-    ]);
-    const mesh = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, 0, 2, 1], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    mesh.bind(skeleton, new Matrix4());
+  it("keeps skeleton-only previews separate from skinned mesh overlays", () => {
+    const root = new Group();
+    const hip = new Bone();
+    const spine = new Bone();
+    const head = new Bone();
+    spine.position.set(0, 1, 0);
+    head.position.set(0, 1, 0);
+    hip.add(spine);
+    spine.add(head);
+    root.add(hip);
+    root.updateMatrixWorld(true);
 
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
+    const result = createCreatorSkeletonOverlays(root);
 
-    expect(positions.getY(1)).toBeCloseTo(2);
-    expect(positions.getZ(1)).toBeCloseTo(1);
+    expect(result.overlayCount).toBe(1);
+    expect(result.overlays[0]?.name).toBe(skeletonOnlyOverlayName);
+    expect(result.skinnedMeshCount).toBe(0);
+    expect(result.skeletonOnlyBoneCount).toBe(3);
+
+    disposeCreatorSkeletonOverlays(result.overlays);
   });
 
-  it("preserves asymmetric left-right joint positions during axis correction", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(-1, -2, -1);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(1, 2, 1)
-    ]);
-    const mesh = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, -1, 2, 1], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    mesh.bind(skeleton, new Matrix4());
+  it("toggles and disposes overlays without unloading the source scene", () => {
+    const { root } = createSkinnedFixture();
+    const result = createCreatorSkeletonOverlays(root);
+    const dispose = vi.spyOn(result.overlays[0].geometry, "dispose");
 
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
+    setCreatorSkeletonOverlaysVisible(result.overlays, false);
+    expect(result.overlays[0].visible).toBe(false);
 
-    expect(positions.getX(1)).toBeCloseTo(-1);
-    expect(positions.getY(1)).toBeCloseTo(2);
-    expect(positions.getZ(1)).toBeCloseTo(1);
-  });
+    setCreatorSkeletonOverlaysVisible(result.overlays, true);
+    expect(result.overlays[0].visible).toBe(true);
 
-  it("aligns against skinned vertex positions instead of raw bind vertices", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, 1, 0);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -1, 0)
-    ]);
-    const mesh = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, 0, 1, 0], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    mesh.bind(skeleton, new Matrix4());
-    child.position.set(0, 2, 0);
-
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
-
-    expect(positions.getY(1)).toBeCloseTo(2);
-  });
-
-  it("uses all material splits when matching skin-weighted joints", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, 2, 1);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -2, -1)
-    ]);
-    const first = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, 0, -2, -1], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    const second = new SkinnedMesh(
-      weightedGeometry(
-        [0, 0, 0, -0.1, 2, 1, 0.1, 2, 1, 0, 2.1, 1, 0, 1.9, 1],
-        [0, 1, 1, 1, 1]
-      ),
-      new MeshBasicMaterial()
-    );
-    first.bind(skeleton, new Matrix4());
-    second.bind(skeleton, new Matrix4());
-    const object = new Object3D();
-    object.add(first, second);
-
-    const overlay = createSkeletonOverlays(object)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
-
-    expect(positions.getY(1)).toBeCloseTo(2);
-    expect(positions.getZ(1)).toBeCloseTo(1);
-  });
-
-  it("does not reapply CUE4Parse axis correction after glTF conversion", () => {
-    const root = new Bone();
-    const child = new Bone();
-    child.position.set(0, 2, 1);
-    root.add(child);
-    const skeleton = new Skeleton([root, child], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -2, -1)
-    ]);
-    const mesh = new SkinnedMesh(
-      weightedGeometry([0, 0, 0, 0, 2, 1], [0, 1]),
-      new MeshBasicMaterial()
-    );
-    mesh.bind(skeleton, new Matrix4());
-
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
-
-    expect(positions.getY(1)).toBeCloseTo(2);
-    expect(positions.getZ(1)).toBeCloseTo(1);
-  });
-
-  it("omits unweighted socket-style bones from skinned overlays", () => {
-    const root = new Bone();
-    const child = new Bone();
-    const socket = new Bone();
-    child.position.set(0, 2, 0);
-    socket.position.set(4, 0, 0);
-    root.add(child);
-    child.add(socket);
-    const skeleton = new Skeleton([root, child, socket], [
-      new Matrix4(),
-      new Matrix4().makeTranslation(0, -2, 0),
-      new Matrix4().makeTranslation(-4, -2, 0)
-    ]);
-    const geometry = new BufferGeometry();
-    geometry.setAttribute(
-      "position",
-      new Float32BufferAttribute([0, 0, 0, -0.2, 2, 0, 0.2, 2, 0], 3)
-    );
-    geometry.setAttribute(
-      "skinIndex",
-      new Uint16BufferAttribute([0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4)
-    );
-    geometry.setAttribute(
-      "skinWeight",
-      new Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4)
-    );
-    const mesh = new SkinnedMesh(geometry, new MeshBasicMaterial());
-    mesh.bind(skeleton, new Matrix4());
-
-    const overlay = createSkeletonOverlays(mesh)[0] as LineSegments;
-    const positions = overlay.geometry.getAttribute("position");
-
-    expect(positions.count).toBe(2);
-    expect(positions.getY(0)).toBeCloseTo(0);
-    expect(positions.getY(1)).toBeCloseTo(2);
-  });
-
-  it("falls back to Three skeleton helpers for skeleton-only hierarchies", () => {
-    const root = new Bone();
-    const child = new Bone();
-    const object = new Object3D();
-    root.add(child);
-    object.add(root);
-
-    const overlay = createSkeletonOverlays(object)[0];
-
-    expect(overlay?.type).toBe("SkeletonHelper");
-  });
-
-  it("skips skinned meshes without a bound skeleton", () => {
-    const mesh = new SkinnedMesh(new BoxGeometry(), new MeshBasicMaterial());
-
-    const overlay = createSkeletonOverlays(mesh)[0];
-
-    expect(overlay).toBeUndefined();
+    disposeCreatorSkeletonOverlays(result.overlays);
+    expect(dispose).toHaveBeenCalledOnce();
+    expect(root.children.length).toBe(3);
   });
 });
 
-function weightedGeometry(positions: number[], indexes: number[]): BufferGeometry {
+function createSkinnedFixture(): { root: Group; skeleton: Skeleton } {
+  const root = new Group();
+  const hip = new Bone();
+  const spine = new Bone();
+  const head = new Bone();
+  hip.position.set(8, 0, 0);
+  spine.position.set(0, 1, 0);
+  head.position.set(0, 1, 0);
+  hip.add(spine);
+  spine.add(head);
+  root.add(hip);
+  root.updateMatrixWorld(true);
+  const skeleton = new Skeleton([hip, spine, head]);
+  root.add(createSkinnedMesh(skeleton, -0.2));
+  root.add(createSkinnedMesh(skeleton, 0.2));
+  root.updateMatrixWorld(true);
+  return { root, skeleton };
+}
+
+function createSkinnedMesh(skeleton: Skeleton, x: number): SkinnedMesh {
   const geometry = new BufferGeometry();
-  geometry.setAttribute("position", new Float32BufferAttribute(positions, 3));
+  geometry.setAttribute(
+    "position",
+    new Float32BufferAttribute([x, 0, 0, x, 1, 0, x, 2, 0], 3)
+  );
   geometry.setAttribute(
     "skinIndex",
-    new Uint16BufferAttribute(
-      indexes.flatMap((index) => [index, 0, 0, 0]),
-      4
-    )
+    new Uint16BufferAttribute([0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0], 4)
   );
   geometry.setAttribute(
     "skinWeight",
-    new Float32BufferAttribute(
-      indexes.flatMap(() => [1, 0, 0, 0]),
-      4
-    )
+    new Float32BufferAttribute([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], 4)
   );
-  return geometry;
+  const mesh = new SkinnedMesh(geometry, new MeshBasicMaterial());
+  mesh.bind(skeleton);
+  return mesh;
 }
