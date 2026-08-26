@@ -11,6 +11,7 @@ import {
   type ImportModPackageResult
 } from "../../shared/contracts/app";
 import type {
+  AppUpdateServiceContract,
   CoreServices,
   CreatorViewportWindowServiceContract
 } from "../../shared/contracts/services";
@@ -111,6 +112,7 @@ function formatReplacementPromptDetail(result: ImportModPackageResult): string {
 }
 
 type IpcServices = CoreServices & {
+  appUpdateService: AppUpdateServiceContract;
   creatorViewportWindowService: CreatorViewportWindowServiceContract;
 };
 
@@ -165,6 +167,18 @@ export function registerIpcHandlers(services: IpcServices): void {
 
   registerHandler(ipcContracts.setAutoValidatePackagedRuntime, (request) =>
     services.settingsService.setAutoValidatePackagedRuntime(request.enabled)
+  );
+
+  registerHandler(ipcContracts.getAppUpdateSnapshot, async () =>
+    services.appUpdateService.getSnapshot()
+  );
+
+  registerHandler(ipcContracts.checkForAppUpdates, () =>
+    services.appUpdateService.checkForUpdates()
+  );
+
+  registerHandler(ipcContracts.installAppUpdate, async () =>
+    services.appUpdateService.installDownloadedUpdate()
   );
 
   registerHandler(ipcContracts.getLifecycleSnapshot, async () => {

@@ -5,6 +5,7 @@ import {
   AcceptMissingProfileModsResultSchema,
   AppSettingsSchema,
   AppStorageLayoutSchema,
+  AppUpdateSnapshotSchema,
   BackupRestoreResultSchema,
   CreateProfileRequestSchema,
   CreatorAssetConflictGraphRequestSchema,
@@ -86,6 +87,7 @@ import {
 import type {
   AppSettings,
   AppStorageLayout,
+  AppUpdateSnapshot,
   AcceptMissingModpackHistoryResult,
   AcceptMissingProfileModsResult,
   BackupRestoreResult,
@@ -181,6 +183,10 @@ export const IPC_CHANNELS = {
   setAutoUpdatePackagedRuntime: "cmm:settings:setAutoUpdatePackagedRuntime",
   setAutoValidatePackagedRuntime:
     "cmm:settings:setAutoValidatePackagedRuntime",
+  getAppUpdateSnapshot: "cmm:appUpdate:getSnapshot",
+  checkForAppUpdates: "cmm:appUpdate:check",
+  installAppUpdate: "cmm:appUpdate:install",
+  appUpdateEvent: "cmm:appUpdate:event",
   getLifecycleSnapshot: "cmm:process:getLifecycleSnapshot",
   listInstalledMods: "cmm:mods:listInstalled",
   importModPackage: "cmm:mods:importPackage",
@@ -315,6 +321,21 @@ export const ipcContracts = {
     SetAutoValidatePackagedRuntimeRequest,
     AppSettings
   >,
+  getAppUpdateSnapshot: {
+    channel: IPC_CHANNELS.getAppUpdateSnapshot,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: AppUpdateSnapshotSchema
+  } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
+  checkForAppUpdates: {
+    channel: IPC_CHANNELS.checkForAppUpdates,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: AppUpdateSnapshotSchema
+  } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
+  installAppUpdate: {
+    channel: IPC_CHANNELS.installAppUpdate,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: AppUpdateSnapshotSchema
+  } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
   getLifecycleSnapshot: {
     channel: IPC_CHANNELS.getLifecycleSnapshot,
     requestSchema: EmptyRequestSchema,
@@ -674,6 +695,12 @@ export interface CmmApi {
   setAutoValidatePackagedRuntime(
     request: SetAutoValidatePackagedRuntimeRequest
   ): Promise<AppSettings>;
+  getAppUpdateSnapshot(): Promise<AppUpdateSnapshot>;
+  checkForAppUpdates(): Promise<AppUpdateSnapshot>;
+  installAppUpdate(): Promise<AppUpdateSnapshot>;
+  onAppUpdateEvent(
+    callback: (snapshot: AppUpdateSnapshot) => void
+  ): () => void;
   getLifecycleSnapshot(): Promise<GameProcessSnapshot>;
   listInstalledMods(): Promise<ModLibrarySnapshot>;
   importModPackage(

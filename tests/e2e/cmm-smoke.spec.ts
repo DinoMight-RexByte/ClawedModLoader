@@ -940,6 +940,18 @@ test.beforeEach(async ({ page }) => {
         autoUpdatePackagedRuntime: boolean;
         autoValidatePackagedRuntime: boolean;
       };
+      appUpdate: {
+        status: string;
+        currentVersion: string;
+        availableVersion: string | null;
+        releaseName: string | null;
+        releaseDate: string | null;
+        message: string;
+        lastCheckedAt: string | null;
+        downloadedAt: string | null;
+        errorMessage: string | null;
+        progress: null;
+      };
     } = {
       activeProfileId: "profile-default",
       profiles: [profileDefault, profileRaid],
@@ -950,6 +962,18 @@ test.beforeEach(async ({ page }) => {
         manualGameDirectory: null,
         autoUpdatePackagedRuntime: true,
         autoValidatePackagedRuntime: false
+      },
+      appUpdate: {
+        status: "unsupported",
+        currentVersion: "0.1.0",
+        availableVersion: null,
+        releaseName: null,
+        releaseDate: null,
+        message: "Automatic app updates run only in the packaged app.",
+        lastCheckedAt: null,
+        downloadedAt: null,
+        errorMessage: null,
+        progress: null
       }
     };
 
@@ -1653,6 +1677,18 @@ test.beforeEach(async ({ page }) => {
         };
         return state.settings;
       },
+      getAppUpdateSnapshot: async () => state.appUpdate,
+      checkForAppUpdates: async () => {
+        state.appUpdate = {
+          ...state.appUpdate,
+          status: "notAvailable",
+          message: "Clawed Mod Manager is up to date.",
+          lastCheckedAt: now
+        };
+        return state.appUpdate;
+      },
+      installAppUpdate: async () => state.appUpdate,
+      onAppUpdateEvent: () => () => undefined,
       getLifecycleSnapshot: async () => ({
         lifecycleState: "STOPPED",
         processId: null,

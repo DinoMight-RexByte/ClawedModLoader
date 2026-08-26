@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import packageJson from "../../package.json";
@@ -67,6 +69,50 @@ describe("release build config", () => {
     );
     expect(packageJson.scripts["package:available-mods"]).not.toContain(
       "package:optimization-dev-plugins"
+    );
+  });
+
+  it("publishes app updates only through the explicit GitHub release command", () => {
+    expect(packageJson.version).toBe("0.1.0");
+    expect(packageJson.repository).toEqual({
+      type: "git",
+      url: "https://github.com/DinoMight-RexByte/ClawedModLoader.git"
+    });
+    expect(packageJson.build.artifactName).toBe(
+      "Clawed-Mod-Manager-${version}-${os}-${arch}.${ext}"
+    );
+    expect(packageJson.build.publish).toEqual([
+      {
+        provider: "github",
+        owner: "DinoMight-RexByte",
+        repo: "ClawedModLoader",
+        releaseType: "release"
+      }
+    ]);
+    expect(packageJson.scripts.dist).toContain("--publish never");
+    expect(packageJson.scripts["release:github"]).toContain("--publish always");
+    expect(packageJson.scripts["release:github"]).toContain(
+      "requireWindowsCodeSigningCredentials"
+    );
+    expect(packageJson.scripts["release:github"]).toContain(
+      "--config.forceCodeSigning=true"
+    );
+    expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(false);
+    expect(packageJson.build.win.signtoolOptions).toEqual({
+      signingHashAlgorithms: ["sha256"],
+      rfc3161TimeStampServer: "http://timestamp.digicert.com",
+      timeStampServer: "http://timestamp.digicert.com"
+    });
+  });
+
+  it("passes Windows signing secrets into the GitHub release workflow", () => {
+    const workflow = readFileSync(".github/workflows/release.yml", "utf8");
+
+    expect(workflow).toContain(
+      "WIN_CSC_LINK: ${{ secrets.WINDOWS_CODESIGN_PFX_BASE64 }}"
+    );
+    expect(workflow).toContain(
+      "WIN_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CODESIGN_PASSWORD }}"
     );
   });
 });

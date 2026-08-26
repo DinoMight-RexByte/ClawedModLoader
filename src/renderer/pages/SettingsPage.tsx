@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   type AppSettings,
+  type AppUpdateSnapshot,
   ThemeModeSchema,
   type GameDiscovery,
   type ImportUe4ssRuntimeResult,
@@ -49,6 +50,35 @@ function runtimeStatusLabel(runtime: RuntimeSnapshot | null): string {
   }
 }
 
+function appUpdateStatusLabel(update: AppUpdateSnapshot | null): string {
+  switch (update?.status) {
+    case "unsupported":
+      return "Packaged app only";
+    case "checking":
+      return "Checking";
+    case "available":
+      return "Available";
+    case "notAvailable":
+      return "Up to date";
+    case "downloading":
+      return "Downloading";
+    case "downloaded":
+      return "Ready to install";
+    case "error":
+      return "Failed";
+    default:
+      return "Idle";
+  }
+}
+
+function appUpdateProgressLabel(update: AppUpdateSnapshot | null): string | null {
+  if (!update?.progress) {
+    return null;
+  }
+
+  return `${Math.round(update.progress.percent)}%`;
+}
+
 export function SettingsPage(): ReactElement {
   const themeMode = useAppStore((state) => state.themeMode);
   const accentColor = useAppStore((state) => state.accentColor);
@@ -57,12 +87,15 @@ export function SettingsPage(): ReactElement {
   const [discovery, setDiscovery] = useState<GameDiscovery | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [appUpdate, setAppUpdate] = useState<AppUpdateSnapshot | null>(null);
   const [runtimeResult, setRuntimeResult] =
     useState<ImportUe4ssRuntimeResult | null>(null);
   const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [appUpdateError, setAppUpdateError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [appUpdateBusy, setAppUpdateBusy] = useState(false);
   const [runtimeDragActive, setRuntimeDragActive] = useState(false);
 
   const loadDiscovery = useCallback(async () => {
@@ -104,11 +137,34 @@ export function SettingsPage(): ReactElement {
     }
   }, []);
 
+  const loadAppUpdate = useCallback(async () => {
+    const nextUpdate = await window.cmm
+      .getAppUpdateSnapshot()
+      .catch((): AppUpdateSnapshot | null => null);
+
+    if (nextUpdate) {
+      setAppUpdate(nextUpdate);
+      setAppUpdateError(null);
+    } else {
+      setAppUpdateError("App update status is unavailable.");
+    }
+  }, []);
+
   useEffect(() => {
     void loadDiscovery();
     void loadRuntime();
     void loadSettings();
-  }, [loadDiscovery, loadRuntime, loadSettings]);
+    void loadAppUpdate();
+  }, [loadAppUpdate, loadDiscovery, loadRuntime, loadSettings]);
+
+  useEffect(
+    () =>
+      window.cmm.onAppUpdateEvent((snapshot) => {
+        setAppUpdate(snapshot);
+        setAppUpdateError(snapshot.errorMessage);
+      }),
+    []
+  );
 
   const runDiscoveryAction = async (
     action: () => Promise<GameDiscovery>
@@ -185,6 +241,31 @@ export function SettingsPage(): ReactElement {
     }
   };
 
+  const checkForAppUpdates = async (): Promise<void> => {
+    setAppUpdateBusy(true);
+    setAppUpdateError(null);
+
+    try {
+      setAppUpdate(await window.cmm.checkForAppUpdates());
+    } catch {
+      setAppUpdateError("The app update check could not be completed.");
+    } finally {
+      setAppUpdateBusy(false);
+    }
+  };
+
+  const installAppUpdate = async (): Promise<void> => {
+    setAppUpdateBusy(true);
+    setAppUpdateError(null);
+
+    try {
+      setAppUpdate(await window.cmm.installAppUpdate());
+    } catch {
+      setAppUpdateError("The downloaded app update could not be started.");
+      setAppUpdateBusy(false);
+    }
+  };
+
   const importRuntimePath = async (sourcePath: string): Promise<void> => {
     setBusy(true);
     setRuntimeError(null);
@@ -225,6 +306,79 @@ export function SettingsPage(): ReactElement {
         <p className="text-sm font-medium text-app-accent">Settings</p>
         <h1 className="mt-1 text-3xl font-semibold">Preferences</h1>
       </header>
+
+      <section className="rounded-lg border border-app-border bg-app-surface p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold">App Updates</h2>
+            <p className="mt-1 text-sm text-app-muted">
+              Status: {appUpdateStatusLabel(appUpdate)}
+              {appUpdateProgressLabel(appUpdate)
+                ? ` (${appUpdateProgressLabel(appUpdate)})`
+                : ""}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button
+              className="h-10 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+              disabled={
+                appUpdateBusy ||
+                appUpdate?.status === "unsupported" ||
+                appUpdate?.status === "checking" ||
+                appUpdate?.status === "downloading"
+              }
+              onClick={() => void checkForAppUpdates()}
+              type="button"
+            >
+              Check Now
+            </button>
+            <button
+              className="h-10 rounded-md border border-app-border px-4 text-sm font-semibold text-app-text hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+              disabled={appUpdateBusy || appUpdate?.status !== "downloaded"}
+              onClick={() => void installAppUpdate()}
+              type="button"
+            >
+              Restart to Update
+            </button>
+          </div>
+        </div>
+
+        <dl className="mt-5 grid gap-3">
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Current version</dt>
+            <dd>
+              <FieldValue value={appUpdate?.currentVersion ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Available version</dt>
+            <dd>
+              <FieldValue value={appUpdate?.availableVersion ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Last checked</dt>
+            <dd>
+              <FieldValue value={appUpdate?.lastCheckedAt ?? null} />
+            </dd>
+          </div>
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Message</dt>
+            <dd>
+              <FieldValue value={appUpdate?.message ?? null} />
+            </dd>
+          </div>
+        </dl>
+
+        {appUpdateError ? (
+          <div
+            className="mt-4 rounded-md border border-app-danger/40 bg-app-danger/10 p-3 text-sm text-app-danger"
+            role="alert"
+          >
+            {appUpdateError}
+          </div>
+        ) : null}
+      </section>
 
       <section className="rounded-lg border border-app-border bg-app-surface p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">

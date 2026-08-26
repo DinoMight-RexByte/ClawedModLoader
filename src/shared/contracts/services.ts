@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   AppStorageLayout,
+  AppUpdateSnapshot,
   AcceptMissingModpackHistoryResult,
   AcceptMissingProfileModsResult,
   BackupRestoreResult,
@@ -318,6 +319,14 @@ export interface SettingsServiceContract {
   setManualGameDirectory(gameDirectory: string | null): Promise<AppSettings>;
   setAutoUpdatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
   setAutoValidatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
+}
+
+export interface AppUpdateServiceContract {
+  getSnapshot(): AppUpdateSnapshot;
+  checkForUpdates(): Promise<AppUpdateSnapshot>;
+  installDownloadedUpdate(): AppUpdateSnapshot;
+  startAutoChecks(): void;
+  onSnapshot(listener: (snapshot: AppUpdateSnapshot) => void): () => void;
 }
 
 export interface CoreServices {

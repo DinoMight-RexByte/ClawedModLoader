@@ -1,9 +1,14 @@
 {
   "name": "clawed-mod-manager",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Windows desktop mod manager and launcher for Clawed.",
   "author": "Clawed Mod Manager Contributors",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DinoMight-RexByte/ClawedModLoader.git"
+  },
+  "homepage": "https://github.com/DinoMight-RexByte/ClawedModLoader",
   "type": "module",
   "main": "dist/main/index.cjs",
   "packageManager": "npm@11.11.0",
@@ -51,7 +56,8 @@
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",
-    "dist": "npm run build && npm run build:unreal-decoder && electron-builder && npm run package:available-mods"
+    "dist": "npm run build && npm run build:unreal-decoder && electron-builder --publish never && npm run package:available-mods",
+    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && electron-builder --publish always --config.forceCodeSigning=true && npm run package:available-mods"
   },
   "cmm": {
     "status": "ux-release-hardening",
@@ -68,10 +74,18 @@
   "build": {
     "appId": "com.clawedmodmanager.app",
     "productName": "Clawed Mod Manager",
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Clawed-Mod-Manager-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "DinoMight-RexByte",
+        "repo": "ClawedModLoader",
+        "releaseType": "release"
+      }
+    ],
     "files": [
       "dist/**/*",
       "package.json"
@@ -102,7 +116,15 @@
       "target": [
         "nsis",
         "zip"
-      ]
+      ],
+      "verifyUpdateCodeSignature": false,
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com",
+        "timeStampServer": "http://timestamp.digicert.com"
+      }
     },
     "nsis": {
       "oneClick": false,
@@ -111,6 +133,7 @@
     }
   },
   "dependencies": {
+    "electron-updater": "^6.8.9",
     "jszip": "^3.10.1",
     "lucide-react": "^1.31.0",
     "react": "^19.2.8",

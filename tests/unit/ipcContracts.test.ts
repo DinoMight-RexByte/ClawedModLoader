@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AppSettingsSchema,
+  AppUpdateSnapshotSchema,
   CreatorMappingsDumpProgressSchema,
   CreatorMappingsDumpResultSchema,
   CreatorMeshExportDialogRequestSchema,
@@ -71,6 +72,46 @@ describe("IPC contracts", () => {
     expect(
       SetAutoValidatePackagedRuntimeRequestSchema.parse({ enabled: false })
     ).toEqual({ enabled: false });
+  });
+
+  it("validates app update snapshots", () => {
+    expect(
+      AppUpdateSnapshotSchema.parse({
+        status: "downloaded",
+        currentVersion: "0.1.0",
+        availableVersion: "0.1.1",
+        releaseName: "0.1.1",
+        releaseDate: new Date().toISOString(),
+        message: "Version 0.1.1 is ready to install.",
+        lastCheckedAt: new Date().toISOString(),
+        downloadedAt: new Date().toISOString(),
+        errorMessage: null,
+        progress: null
+      })
+    ).toMatchObject({
+      status: "downloaded",
+      availableVersion: "0.1.1"
+    });
+
+    expect(() =>
+      AppUpdateSnapshotSchema.parse({
+        status: "downloading",
+        currentVersion: "0.1.0",
+        availableVersion: "0.1.1",
+        releaseName: null,
+        releaseDate: null,
+        message: "Downloading version 0.1.1.",
+        lastCheckedAt: null,
+        downloadedAt: null,
+        errorMessage: null,
+        progress: {
+          percent: 101,
+          transferred: 1,
+          total: 1,
+          bytesPerSecond: 1
+        }
+      })
+    ).toThrow();
   });
 
   it("requires scoped runtime validation evidence", () => {

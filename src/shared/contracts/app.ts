@@ -159,6 +159,40 @@ export type SetAutoValidatePackagedRuntimeRequest = z.infer<
   typeof SetAutoValidatePackagedRuntimeRequestSchema
 >;
 
+export const AppUpdateStatusSchema = z.enum([
+  "unsupported",
+  "idle",
+  "checking",
+  "available",
+  "notAvailable",
+  "downloading",
+  "downloaded",
+  "error"
+]);
+export type AppUpdateStatus = z.infer<typeof AppUpdateStatusSchema>;
+
+export const AppUpdateProgressSchema = z.object({
+  percent: z.number().min(0).max(100),
+  transferred: z.number().nonnegative(),
+  total: z.number().nonnegative(),
+  bytesPerSecond: z.number().nonnegative()
+});
+export type AppUpdateProgress = z.infer<typeof AppUpdateProgressSchema>;
+
+export const AppUpdateSnapshotSchema = z.object({
+  status: AppUpdateStatusSchema,
+  currentVersion: z.string(),
+  availableVersion: z.string().nullable(),
+  releaseName: z.string().nullable(),
+  releaseDate: z.string().nullable(),
+  message: z.string(),
+  lastCheckedAt: z.string().nullable(),
+  downloadedAt: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+  progress: AppUpdateProgressSchema.nullable()
+});
+export type AppUpdateSnapshot = z.infer<typeof AppUpdateSnapshotSchema>;
+
 export const GameProcessSnapshotSchema = z.object({
   lifecycleState: LifecycleStateSchema,
   processId: z.number().int().positive().nullable(),

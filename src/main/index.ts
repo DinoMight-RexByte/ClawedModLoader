@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { registerIpcHandlers } from "./ipc/registerIpcHandlers";
 import { CreatorViewportWindowService } from "./services/creatorViewportWindowService";
+import { ElectronAppUpdateService } from "./services/appUpdateService";
 import {
   registerAppCrashDiagnostics,
   registerWindowCrashDiagnostics,
@@ -16,6 +17,7 @@ import { cleanupAppStorageArtifacts } from "./services/storageCleanupService";
 import { getAllowedUserDataOverride } from "./services/storageService";
 import type { CreatorViewportWindowEvent } from "../shared/contracts/app";
 import { IPC_CHANNELS } from "../shared/contracts/ipc";
+import type { AppUpdateServiceContract } from "../shared/contracts/services";
 
 const rendererDevServerUrl = process.env.VITE_DEV_SERVER_URL;
 const appExitShutdownTimeoutMs = 30_000;
@@ -111,6 +113,18 @@ function createCreatorViewportWindowService(
   });
 }
 
+function registerAppUpdateBroadcast(
+  appUpdateService: AppUpdateServiceContract
+): void {
+  appUpdateService.onSnapshot((snapshot) => {
+    BrowserWindow.getAllWindows().forEach((window) => {
+      if (!window.isDestroyed()) {
+        window.webContents.send(IPC_CHANNELS.appUpdateEvent, snapshot);
+      }
+    });
+  });
+}
+
 function denyWindowOpen(window: BrowserWindow): void {
   window.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);
@@ -197,10 +211,17 @@ app.whenReady().then(async () => {
     await services.runtimeManager.ensureBundledUe4ssRuntime();
   }
   await cleanupAppStorageArtifacts(services.storageService, logger);
+  const appUpdateService = new ElectronAppUpdateService({ logger });
   const creatorViewportWindowService =
     createCreatorViewportWindowService(logger);
-  registerIpcHandlers({ ...services, creatorViewportWindowService });
+  registerAppUpdateBroadcast(appUpdateService);
+  registerIpcHandlers({
+    ...services,
+    appUpdateService,
+    creatorViewportWindowService
+  });
   createMainWindow(logger, services.processSupervisor as WindowsProcessSupervisor);
+  appUpdateService.startAutoChecks();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

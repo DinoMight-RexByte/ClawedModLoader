@@ -5,7 +5,10 @@ import {
   type IpcRendererEvent
 } from "electron";
 
-import { CreatorMappingsDumpProgressSchema } from "../shared/contracts/app";
+import {
+  AppUpdateSnapshotSchema,
+  CreatorMappingsDumpProgressSchema
+} from "../shared/contracts/app";
 import {
   IPC_CHANNELS,
   ipcContracts,
@@ -40,6 +43,20 @@ const api: CmmApi = {
     invoke(ipcContracts.setAutoUpdatePackagedRuntime, request),
   setAutoValidatePackagedRuntime: (request) =>
     invoke(ipcContracts.setAutoValidatePackagedRuntime, request),
+  getAppUpdateSnapshot: () =>
+    invoke(ipcContracts.getAppUpdateSnapshot, {}),
+  checkForAppUpdates: () =>
+    invoke(ipcContracts.checkForAppUpdates, {}),
+  installAppUpdate: () => invoke(ipcContracts.installAppUpdate, {}),
+  onAppUpdateEvent: (callback) => {
+    const listener = (_event: IpcRendererEvent, raw: unknown) => {
+      callback(AppUpdateSnapshotSchema.parse(raw));
+    };
+    ipcRenderer.on(IPC_CHANNELS.appUpdateEvent, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC_CHANNELS.appUpdateEvent, listener);
+    };
+  },
   getLifecycleSnapshot: () => invoke(ipcContracts.getLifecycleSnapshot, {}),
   listInstalledMods: () => invoke(ipcContracts.listInstalledMods, {}),
   importModPackage: (request) => invoke(ipcContracts.importModPackage, request),
