@@ -57,6 +57,7 @@
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",
     "dist": "npm run build && npm run build:unreal-decoder && electron-builder --publish never && npm run package:available-mods",
+    "release": "node scripts/runReleaseFlow.mjs",
     "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && electron-builder --publish always --config.forceCodeSigning=true"
   },
   "cmm": {
@@ -74,7 +75,7 @@
   "build": {
     "appId": "com.clawedmodmanager.app",
     "productName": "Clawed Mod Manager",
-    "artifactName": "Clawed-Mod-Manager-${version}-${os}-${arch}.${ext}",
+    "artifactName": "CMM-${version}-Portable_${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
@@ -127,6 +128,7 @@
       }
     },
     "nsis": {
+      "artifactName": "Clawed-Mod-Manager-Installer_${os}-${arch}.${ext}",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true

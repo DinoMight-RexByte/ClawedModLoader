@@ -79,7 +79,10 @@ describe("release build config", () => {
       url: "https://github.com/DinoMight-RexByte/ClawedModLoader.git"
     });
     expect(packageJson.build.artifactName).toBe(
-      "Clawed-Mod-Manager-${version}-${os}-${arch}.${ext}"
+      "CMM-${version}-Portable_${os}-${arch}.${ext}"
+    );
+    expect(packageJson.build.nsis.artifactName).toBe(
+      "Clawed-Mod-Manager-Installer_${os}-${arch}.${ext}"
     );
     expect(packageJson.build.publish).toEqual([
       {
@@ -90,6 +93,7 @@ describe("release build config", () => {
       }
     ]);
     expect(packageJson.scripts.dist).toContain("--publish never");
+    expect(packageJson.scripts.release).toBe("node scripts/runReleaseFlow.mjs");
     expect(packageJson.scripts["release:github"]).toContain("--publish always");
     expect(packageJson.scripts["release:github"]).toContain(
       "requireWindowsCodeSigningCredentials"
