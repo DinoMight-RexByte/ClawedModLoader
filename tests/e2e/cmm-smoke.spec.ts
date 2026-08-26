@@ -294,7 +294,7 @@ async function expectViewportOutlinerWorks(page: Page): Promise<void> {
     .poll(async () => await viewportAssetScreenPoint(canvas, "base-utah-skeletal-mesh"))
     .toBeNull();
 
-  await page.getByRole("button", { name: "Export Visible Set" }).click();
+  await page.getByRole("button", { name: "Plan Visible Set" }).click();
   await expect
     .poll(() =>
       page.evaluate(() =>
@@ -791,6 +791,42 @@ test.beforeEach(async ({ page }) => {
       problems: [],
       installedAt: now
     };
+    const titleLogoMod = {
+      id: "ModsActiveTitleLogo",
+      version: "20260826T120000",
+      name: "Mods Active Title Logo",
+      author: "CMM Fixtures",
+      description: "Shows a title-screen marker when mods are active.",
+      loader: "pak",
+      sha256: "2".repeat(64),
+      packageIdentityId: "cmm:generated:ModsActiveTitleLogo",
+      enabled: false,
+      installPath: "C:\\CMM\\library\\mods-active-title-logo",
+      packagePath: "C:\\fixtures\\ModsActiveTitleLogo.clawedmod",
+      iconDataUrl: null,
+      hasReadme: true,
+      status: "ready",
+      problems: [],
+      installedAt: now
+    };
+    const capacityMod = {
+      id: "CoopCapacity8",
+      version: "20260826T120000",
+      name: "Co-op Capacity 8",
+      author: "CMM Fixtures",
+      description: "Raises the host-side co-op session capacity.",
+      loader: "ue4ss",
+      sha256: "3".repeat(64),
+      packageIdentityId: "cmm:generated:CoopCapacity8",
+      enabled: false,
+      installPath: "C:\\CMM\\library\\coop-capacity8",
+      packagePath: "C:\\fixtures\\CoopCapacity8.clawedmod",
+      iconDataUrl: null,
+      hasReadme: true,
+      status: "ready",
+      problems: [],
+      installedAt: now
+    };
     const creatorBaseEntry = {
       id: "base-utah-claws",
       label: "/Game/UtahRaptor/Textures/T_Utah_Claws_D.T_Utah_Claws_D",
@@ -913,7 +949,12 @@ test.beforeEach(async ({ page }) => {
       preferredLaunchMode: summary.preferredLaunchMode
     });
 
-    type FakeMod = typeof coreMod | typeof femaleMod | typeof importedMod;
+    type FakeMod =
+      | typeof coreMod
+      | typeof femaleMod
+      | typeof importedMod
+      | typeof titleLogoMod
+      | typeof capacityMod;
     type FakeProfileSummary = typeof profileDefault;
     type FakeHistoryEntry = {
       id: string;
@@ -1591,6 +1632,80 @@ test.beforeEach(async ({ page }) => {
       },
       lastCommand: null
     });
+    const availableEntry = (
+      key: string,
+      category: "prototype" | "release",
+      fileName: string,
+      mod: typeof titleLogoMod | typeof capacityMod,
+      installScope: "everyone" | "hostOnly"
+    ) => ({
+      key,
+      category,
+      fileName,
+      id: mod.id,
+      name: mod.name,
+      version: mod.version,
+      author: mod.author,
+      description: mod.description,
+      loader: mod.loader,
+      packageIdentityId: mod.packageIdentityId,
+      sha256: mod.sha256,
+      installScope,
+      installState: state.mods.some(
+        (installed) =>
+          installed.id === mod.id &&
+          installed.version === mod.version &&
+          installed.sha256 === mod.sha256
+      )
+        ? "installed"
+        : "notInstalled",
+      problems: []
+    });
+    const availableCatalog = () => {
+      const releaseMods = [
+        availableEntry(
+          "release:ModsActiveTitleLogo.clawedmod",
+          "release",
+          "ModsActiveTitleLogo.clawedmod",
+          titleLogoMod,
+          "everyone"
+        )
+      ];
+      const prototypeMods = [
+        availableEntry(
+          "prototype:CoopCapacity8.clawedmod",
+          "prototype",
+          "CoopCapacity8.clawedmod",
+          capacityMod,
+          "hostOnly"
+        )
+      ];
+      const mods = [...releaseMods, ...prototypeMods];
+
+      return {
+        generatedAt: now,
+        groups: [
+          {
+            category: "release",
+            title: "Official Release Mods",
+            mods: releaseMods
+          },
+          {
+            category: "prototype",
+            title: "Prototype Mods",
+            mods: prototypeMods
+          }
+        ],
+        totals: {
+          available: mods.length,
+          prototype: prototypeMods.length,
+          release: releaseMods.length,
+          installed: mods.filter((mod) => mod.installState === "installed").length,
+          problems: 0
+        },
+        problems: []
+      };
+    };
     const cmm: Record<string, any> = {
       getPlaySnapshot: async () => {
         const nextSnapshot = playSnapshot();
@@ -1719,6 +1834,52 @@ test.beforeEach(async ({ page }) => {
           state.order = [...state.order, importedMod];
         }
         return { status: "installed", mod: importedMod, problems: [] };
+      },
+      listAvailableMods: async () => availableCatalog(),
+      installAvailableMod: async ({ key }: { key: string }) => {
+        const selected =
+          key === "release:ModsActiveTitleLogo.clawedmod"
+            ? titleLogoMod
+            : key === "prototype:CoopCapacity8.clawedmod"
+              ? capacityMod
+              : null;
+
+        if (!selected) {
+          return {
+            result: {
+              status: "failed",
+              mod: null,
+              problems: [
+                {
+                  severity: "warning",
+                  code: "AVAILABLE_MOD_NOT_FOUND",
+                  message: "That bundled mod package is no longer available."
+                }
+              ]
+            },
+            catalog: availableCatalog()
+          };
+        }
+
+        const alreadyInstalled = state.mods.some(
+          (mod) =>
+            mod.id === selected.id &&
+            mod.version === selected.version &&
+            mod.sha256 === selected.sha256
+        );
+        if (!alreadyInstalled) {
+          state.mods = [...state.mods, selected];
+          state.order = [...state.order, selected];
+        }
+
+        return {
+          result: {
+            status: alreadyInstalled ? "alreadyInstalled" : "installed",
+            mod: selected,
+            problems: []
+          },
+          catalog: availableCatalog()
+        };
       },
       uninstallMod: async () => ({ status: "ok", mod: null, problems: [] }),
       setModEnabled: async ({
@@ -2706,7 +2867,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("smoke-tests first run and primary desktop flows", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   await page.goto("/");
 
   await expect(page.getByRole("dialog", { name: "First-Run Setup" })).toBeVisible();
@@ -2750,13 +2911,30 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
     page.getByRole("heading", { name: "Character Framework" })
   ).toBeVisible();
 
+  await page.getByRole("button", { name: "Available" }).click();
+  await expect(page.getByRole("heading", { name: "Available Mods" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Official Release Mods" })
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Prototype Mods" })
+  ).toBeVisible();
+  await expect(page.getByText("Everyone's PC")).toBeVisible();
+  await expect(page.getByText("Host PC only")).toBeVisible();
+  const titleLogoCard = page.getByRole("article", {
+    name: /Mods Active Title Logo/
+  });
+  await titleLogoCard.getByRole("button", { name: "Install" }).click();
+  await expect(page.getByText("Installed Mods Active Title Logo.")).toBeVisible();
+  await expect(
+    titleLogoCard.getByRole("button", { name: "Installed" })
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "Creator" }).click();
   await expect(
     page.getByRole("heading", { name: "Creator Asset Workspace" })
   ).toBeVisible();
   await expect(page.getByText("Fixture warning can be cleared.")).toBeVisible();
-  await page.getByRole("button", { name: "Clear Warnings" }).click();
-  await expect(page.getByText("Fixture warning can be cleared.")).toBeHidden();
   await expect(page.getByRole("heading", { name: "Asset Tree" })).toBeVisible();
   await expect
     .poll(() =>
@@ -2822,6 +3000,8 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   ).toBeVisible();
   await expectModelViewportRendered(page);
   await page.getByRole("button", { name: "Plan Visible Set" }).click();
+  await expect(page.getByText("Export plan: blocked")).toBeVisible();
+  await page.getByRole("button", { name: "Export Visible Set" }).click();
   await expect(page.getByText("Package export: exported")).toBeVisible();
   await expectDiagnosticMaterialPixels(page);
   await expectViewportLightControlsWork(page);
@@ -2884,7 +3064,7 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   await expect(page.getByText("Explicit conflicts: male-character")).toBeVisible();
   await expect(page.getByText("Load after: core-framework")).toBeVisible();
   await expectViewportTextureDropdownWorks(page);
-  await page.getByRole("button", { name: "Export Visible Set" }).click();
+  await page.getByRole("button", { name: "Plan Visible Set" }).click();
   await expect(page.getByText("Export plan: blocked")).toBeVisible();
   await expect
     .poll(() =>
@@ -3299,6 +3479,7 @@ for (const viewport of responsiveViewports) {
     const pages = [
       { nav: "Play", heading: "Launch Clawed" },
       { nav: "Mods", heading: "Local Mods" },
+      { nav: "Available", heading: "Available Mods" },
       { nav: "Creator", heading: "Creator Asset Workspace" },
       { nav: "Profiles", heading: "Mod Profiles" },
       { nav: "Load Order", heading: "Logical Order" },

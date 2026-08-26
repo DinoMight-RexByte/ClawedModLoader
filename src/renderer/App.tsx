@@ -3,6 +3,7 @@ import type { ReactElement } from "react";
 import { AppShell } from "./components/AppShell";
 import { FirstRunOnboarding } from "./components/FirstRunOnboarding";
 import { useTheme } from "./hooks/useTheme";
+import { AvailableModsPage } from "./pages/AvailableModsPage";
 import { CreatorAssetsPage } from "./pages/CreatorAssetsPage";
 import { CreatorViewportWindowPage } from "./pages/CreatorViewportWindowPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
@@ -26,6 +27,7 @@ export function App(): ReactElement {
     <AppShell>
       {activePage === "play" ? <PlayPage /> : null}
       {activePage === "mods" ? <ModsPage /> : null}
+      {activePage === "availableMods" ? <AvailableModsPage /> : null}
       {activePage === "creator" ? <CreatorAssetsPage /> : null}
       {activePage === "profiles" ? <ProfilesPage /> : null}
       {activePage === "loadOrder" ? <LoadOrderPage /> : null}

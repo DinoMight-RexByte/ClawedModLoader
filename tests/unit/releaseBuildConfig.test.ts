@@ -61,7 +61,7 @@ describe("release build config", () => {
 
   it("includes all generated user-facing mods in the dist command", () => {
     expect(packageJson.scripts["package:available-mods"]).toBe(
-      "npm run package:manual-qa && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
+      "npm run package:manual-qa && npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
     );
     expect(packageJson.scripts.dist).toContain("npm run package:available-mods");
     expect(packageJson.scripts["package:available-mods"]).not.toContain(

@@ -2,6 +2,7 @@ import {
   Boxes,
   CheckCircle2,
   ClipboardList,
+  Download,
   FolderTree,
   Gauge,
   PackageOpen,
@@ -25,6 +26,11 @@ const navigationItems: Array<{
 }> = [
   { id: "play", label: "Play", icon: <Play aria-hidden="true" size={18} /> },
   { id: "mods", label: "Mods", icon: <Boxes aria-hidden="true" size={18} /> },
+  {
+    id: "availableMods",
+    label: "Available",
+    icon: <Download aria-hidden="true" size={18} />
+  },
   {
     id: "creator",
     label: "Creator",

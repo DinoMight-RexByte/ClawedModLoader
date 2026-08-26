@@ -52,7 +52,7 @@
     "package:coop-capacity8": "node scripts/createCoopCapacity8Package.mjs",
     "package:player-name-repair": "node scripts/createPlayerNameRepairPackage.mjs",
     "package:save-backup": "node scripts/createSaveBackupPackage.mjs",
-    "package:available-mods": "npm run package:manual-qa && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup",
+    "package:available-mods": "npm run package:manual-qa && npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",

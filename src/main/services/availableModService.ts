@@ -46,7 +46,11 @@ const defaultTitles: Record<AvailableModCategory, string> = {
   release: "Official Release Mods",
   prototype: "Prototype Mods"
 };
-const hostOnlyModIds = new Set(["CoopCapacity8", "CoopCatchupTeleport"]);
+const hostOnlyModIds = new Set([
+  "CoopCapacity8",
+  "CoopCatchupTeleport",
+  "SaveBackupRotator"
+]);
 
 export class LocalAvailableModService implements AvailableModServiceContract {
   constructor(

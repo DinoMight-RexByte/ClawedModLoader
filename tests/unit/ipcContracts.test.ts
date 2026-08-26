@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   AppSettingsSchema,
   AppUpdateSnapshotSchema,
+  AvailableModCatalogSchema,
   CreatorMappingsDumpProgressSchema,
   CreatorMappingsDumpResultSchema,
   CreatorMeshExportDialogRequestSchema,
   ExternalModInspectionResultSchema,
   ImportModPackageRequestSchema,
   ImportModPackageResultSchema,
+  InstallAvailableModRequestSchema,
+  InstallAvailableModResultSchema,
   LaunchCommandResultSchema,
   LaunchCommandRequestSchema,
   PlaySnapshotSchema,
@@ -216,6 +219,78 @@ describe("IPC contracts", () => {
         problems: []
       })
     ).toMatchObject({ status: "needsReplacementConfirmation" });
+  });
+
+  it("validates available mod catalog install requests and results", () => {
+    const catalog = {
+      generatedAt: new Date().toISOString(),
+      groups: [
+        {
+          category: "release",
+          title: "Official Release Mods",
+          mods: [
+            {
+              key: "release:ModsActiveTitleLogo.clawedmod",
+              category: "release",
+              fileName: "ModsActiveTitleLogo.clawedmod",
+              id: "ModsActiveTitleLogo",
+              name: "Mods Active Title Logo",
+              version: "20260826T120000",
+              author: "CMM Fixtures",
+              description: "Shows a title-screen marker when mods are active.",
+              loader: "pak",
+              packageIdentityId: "cmm:generated:ModsActiveTitleLogo",
+              sha256:
+                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+              installScope: "everyone",
+              installState: "notInstalled",
+              problems: []
+            }
+          ]
+        },
+        {
+          category: "prototype",
+          title: "Prototype Mods",
+          mods: []
+        }
+      ],
+      totals: {
+        available: 1,
+        prototype: 0,
+        release: 1,
+        installed: 0,
+        problems: 0
+      },
+      problems: []
+    };
+
+    expect(AvailableModCatalogSchema.parse(catalog).groups[0].mods[0]).toMatchObject(
+      {
+        installScope: "everyone",
+        installState: "notInstalled"
+      }
+    );
+    expect(
+      InstallAvailableModRequestSchema.parse({
+        key: "release:ModsActiveTitleLogo.clawedmod",
+        replacement: {
+          action: "replaceMatchingIdentity",
+          packageIdentityId: "cmm:generated:ModsActiveTitleLogo"
+        }
+      })
+    ).toMatchObject({
+      replacement: { packageIdentityId: "cmm:generated:ModsActiveTitleLogo" }
+    });
+    expect(
+      InstallAvailableModResultSchema.parse({
+        result: {
+          status: "failed",
+          mod: null,
+          problems: []
+        },
+        catalog
+      })
+    ).toMatchObject({ result: { status: "failed" } });
   });
 
   it("keeps creator mesh export dialog requests narrow", () => {

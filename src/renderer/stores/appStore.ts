@@ -6,6 +6,7 @@ import { defaultAccentColor, normalizeThemeMode } from "../lib/theme";
 export type NavigationPage =
   | "play"
   | "mods"
+  | "availableMods"
   | "creator"
   | "profiles"
   | "loadOrder"

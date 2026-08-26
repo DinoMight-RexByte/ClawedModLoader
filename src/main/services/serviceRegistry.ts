@@ -230,11 +230,6 @@ function getAvailableModSourceDirectories() {
       directory: path.join(root, "official-launch-mods")
     },
     {
-      category: "release" as const,
-      title: "Manual QA Mods",
-      directory: path.join(root, "manual-test-mods")
-    },
-    {
       category: "prototype" as const,
       title: "Prototype Mods",
       directory: path.join(root, "prototype-mods")
