@@ -97,6 +97,9 @@ describe("release build config", () => {
     expect(packageJson.scripts["release:github"]).toContain(
       "--config.forceCodeSigning=true"
     );
+    expect(packageJson.scripts["release:github"]).not.toContain(
+      "package:available-mods"
+    );
     expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(false);
     expect(packageJson.build.win.signtoolOptions).toEqual({
       signingHashAlgorithms: ["sha256"],

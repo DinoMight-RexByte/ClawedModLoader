@@ -57,7 +57,7 @@
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",
     "dist": "npm run build && npm run build:unreal-decoder && electron-builder --publish never && npm run package:available-mods",
-    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && electron-builder --publish always --config.forceCodeSigning=true && npm run package:available-mods"
+    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && electron-builder --publish always --config.forceCodeSigning=true"
   },
   "cmm": {
     "status": "ux-release-hardening",
