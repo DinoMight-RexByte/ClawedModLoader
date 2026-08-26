@@ -112,6 +112,13 @@ describe("release build config", () => {
     });
   });
 
+  it("documents the version flag for the local release command", () => {
+    const releaseScript = readFileSync("scripts/runReleaseFlow.mjs", "utf8");
+
+    expect(releaseScript).toContain("npm run release -- -v <x.y.z>");
+    expect(releaseScript).toContain("--version <x.y.z>");
+  });
+
   it("passes Windows signing secrets into the GitHub release workflow", () => {
     const workflow = readFileSync(".github/workflows/release.yml", "utf8");
 

@@ -2,8 +2,12 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import process from "node:process";
 
-const version = process.argv[2];
 const versionPattern = /^\d+\.\d+\.\d+$/;
+const usage = [
+  "Usage: npm run release -- -v <x.y.z>",
+  "       npm run release -- --version <x.y.z>",
+  "       npm run release -- <x.y.z>"
+].join("\n");
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -69,8 +73,49 @@ function compareVersions(left, right) {
   return 0;
 }
 
+function parseVersion(args) {
+  let version = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "-h" || arg === "--help") {
+      process.stdout.write(`${usage}\n`);
+      process.exit(0);
+    }
+
+    if (arg === "-v" || arg === "--version") {
+      if (version) {
+        fail("Release version was provided more than once.");
+      }
+      version = args[index + 1] ?? null;
+      index += 1;
+      continue;
+    }
+
+    if (arg.startsWith("--version=")) {
+      if (version) {
+        fail("Release version was provided more than once.");
+      }
+      version = arg.slice("--version=".length);
+      continue;
+    }
+
+    if (!arg.startsWith("-") && !version) {
+      version = arg;
+      continue;
+    }
+
+    fail(`Unknown release argument: ${arg}`);
+  }
+
+  return version;
+}
+
+const version = parseVersion(process.argv.slice(2));
+
 if (!version || !versionPattern.test(version)) {
-  fail("Usage: npm run release -- <x.y.z>");
+  fail(usage);
 }
 
 if (read("git", ["branch", "--show-current"]) !== "main") {
