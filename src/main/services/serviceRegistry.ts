@@ -13,6 +13,7 @@ import { LooseFileDeploymentAdapter } from "../adapters/unreal/looseFileDeployme
 import { PakDeploymentAdapter } from "../adapters/unreal/pakDeploymentAdapter";
 import { UE4SSDeploymentAdapter } from "../adapters/ue4ss/ue4ssDeploymentAdapter";
 import { LocalAssetRegistryService } from "./assetRegistryService";
+import { LocalAvailableModService } from "./availableModService";
 import { LocalBackupService } from "./backupService";
 import { ClawedModPackageService } from "./clawedModPackageService";
 import { LocalDeploymentService } from "./deploymentService";
@@ -63,6 +64,11 @@ export function createMainServices(options?: {
   const modLibraryService = new LocalModLibraryService(
     storageService,
     packageService
+  );
+  const availableModService = new LocalAvailableModService(
+    packageService,
+    modLibraryService,
+    getAvailableModSourceDirectories()
   );
   const externalImportService = new LocalExternalModImportService(
     storageService,
@@ -171,6 +177,7 @@ export function createMainServices(options?: {
     packagedRuntimeValidationService,
     unrealMappingsService,
     runtimeManager,
+    availableModService,
     modLibraryService,
     externalImportService,
     assetRegistryService,
@@ -211,6 +218,36 @@ function getBundledUe4ssRuntimePath(): string {
   }
 
   return path.join(process.cwd(), "assets", "runtime", "ue4ss", "default");
+}
+
+function getAvailableModSourceDirectories() {
+  const root = getReleaseCompanionRoot();
+
+  return [
+    {
+      category: "release" as const,
+      title: "Official Release Mods",
+      directory: path.join(root, "official-launch-mods")
+    },
+    {
+      category: "release" as const,
+      title: "Manual QA Mods",
+      directory: path.join(root, "manual-test-mods")
+    },
+    {
+      category: "prototype" as const,
+      title: "Prototype Mods",
+      directory: path.join(root, "prototype-mods")
+    }
+  ];
+}
+
+function getReleaseCompanionRoot(): string {
+  if (app.isPackaged) {
+    return path.dirname(app.getPath("exe"));
+  }
+
+  return path.join(process.cwd(), "release");
 }
 
 function getBundledClawedFileMapPath(): string {

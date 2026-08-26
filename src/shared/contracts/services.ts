@@ -2,6 +2,7 @@ import type {
   AppSettings,
   AppStorageLayout,
   AppUpdateSnapshot,
+  AvailableModCatalog,
   AcceptMissingModpackHistoryResult,
   AcceptMissingProfileModsResult,
   BackupRestoreResult,
@@ -44,6 +45,8 @@ import type {
   GameProcessSnapshot,
   ImportModPackageRequest,
   ImportModPackageResult,
+  InstallAvailableModRequest,
+  InstallAvailableModResult,
   ImportUe4ssRuntimeRequest,
   ImportUe4ssRuntimeResult,
   InspectManifestResult,
@@ -95,6 +98,7 @@ export type CoreServiceId =
   | "deploymentService"
   | "packagedRuntimeValidationService"
   | "runtimeManager"
+  | "availableModService"
   | "modLibraryService"
   | "externalImportService"
   | "assetRegistryService"
@@ -186,6 +190,13 @@ export interface ModLibraryServiceContract extends ServiceHealthReporter {
   readReadme(request: ModIdentityRequest): Promise<ReadmeResult>;
   openModFolder(request: ModIdentityRequest): Promise<ModOperationResult>;
   countInstalledPackages(): Promise<number>;
+}
+
+export interface AvailableModServiceContract extends ServiceHealthReporter {
+  listAvailableMods(): Promise<AvailableModCatalog>;
+  installAvailableMod(
+    request: InstallAvailableModRequest
+  ): Promise<InstallAvailableModResult>;
 }
 
 export interface ExternalImportServiceContract extends ServiceHealthReporter {
@@ -337,6 +348,7 @@ export interface CoreServices {
   packagedRuntimeValidationService: PackagedRuntimeValidationServiceContract;
   unrealMappingsService: UnrealMappingsServiceContract;
   runtimeManager: RuntimeManagerContract;
+  availableModService: AvailableModServiceContract;
   modLibraryService: ModLibraryServiceContract;
   externalImportService: ExternalImportServiceContract;
   assetRegistryService: AssetRegistryServiceContract;

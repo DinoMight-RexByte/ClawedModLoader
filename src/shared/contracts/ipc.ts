@@ -6,6 +6,7 @@ import {
   AppSettingsSchema,
   AppStorageLayoutSchema,
   AppUpdateSnapshotSchema,
+  AvailableModCatalogSchema,
   BackupRestoreResultSchema,
   CreateProfileRequestSchema,
   CreatorAssetConflictGraphRequestSchema,
@@ -43,6 +44,8 @@ import {
   GameProcessSnapshotSchema,
   ImportModPackageRequestSchema,
   ImportModPackageResultSchema,
+  InstallAvailableModRequestSchema,
+  InstallAvailableModResultSchema,
   ImportUe4ssRuntimeRequestSchema,
   ImportUe4ssRuntimeResultSchema,
   InspectManifestResultSchema,
@@ -88,6 +91,7 @@ import type {
   AppSettings,
   AppStorageLayout,
   AppUpdateSnapshot,
+  AvailableModCatalog,
   AcceptMissingModpackHistoryResult,
   AcceptMissingProfileModsResult,
   BackupRestoreResult,
@@ -129,6 +133,8 @@ import type {
   GameProcessSnapshot,
   ImportModPackageRequest,
   ImportModPackageResult,
+  InstallAvailableModRequest,
+  InstallAvailableModResult,
   ImportUe4ssRuntimeRequest,
   ImportUe4ssRuntimeResult,
   InspectManifestResult,
@@ -192,6 +198,8 @@ export const IPC_CHANNELS = {
   importModPackage: "cmm:mods:importPackage",
   importExternalModPackage: "cmm:mods:importExternalPackage",
   chooseAndImportModPackage: "cmm:mods:chooseAndImportPackage",
+  listAvailableMods: "cmm:availableMods:list",
+  installAvailableMod: "cmm:availableMods:install",
   uninstallMod: "cmm:mods:uninstall",
   setModEnabled: "cmm:mods:setEnabled",
   inspectModManifest: "cmm:mods:inspectManifest",
@@ -361,6 +369,19 @@ export const ipcContracts = {
     requestSchema: EmptyRequestSchema,
     responseSchema: ImportModPackageResultSchema
   } satisfies IpcContract<EmptyRequest, ImportModPackageResult>,
+  listAvailableMods: {
+    channel: IPC_CHANNELS.listAvailableMods,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: AvailableModCatalogSchema
+  } satisfies IpcContract<EmptyRequest, AvailableModCatalog>,
+  installAvailableMod: {
+    channel: IPC_CHANNELS.installAvailableMod,
+    requestSchema: InstallAvailableModRequestSchema,
+    responseSchema: InstallAvailableModResultSchema
+  } satisfies IpcContract<
+    InstallAvailableModRequest,
+    InstallAvailableModResult
+  >,
   uninstallMod: {
     channel: IPC_CHANNELS.uninstallMod,
     requestSchema: ModIdentityRequestSchema,
@@ -710,6 +731,10 @@ export interface CmmApi {
     request: ImportModPackageRequest
   ): Promise<ImportModPackageResult>;
   chooseAndImportModPackage(): Promise<ImportModPackageResult>;
+  listAvailableMods(): Promise<AvailableModCatalog>;
+  installAvailableMod(
+    request: InstallAvailableModRequest
+  ): Promise<InstallAvailableModResult>;
   uninstallMod(request: ModIdentityRequest): Promise<ModOperationResult>;
   setModEnabled(request: SetModEnabledRequest): Promise<ModOperationResult>;
   inspectModManifest(

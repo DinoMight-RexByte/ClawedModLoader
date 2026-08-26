@@ -122,6 +122,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
       this.dependencies.deploymentService.getStatus(),
       this.dependencies.packagedRuntimeValidationService.getStatus(),
       this.dependencies.runtimeManager.getStatus(),
+      this.dependencies.availableModService.getStatus(),
       this.dependencies.modLibraryService.getStatus(),
       this.dependencies.externalImportService.getStatus(),
       this.dependencies.assetRegistryService.getStatus(),

@@ -84,6 +84,7 @@ export const DiagnosticErrorSchema = z.object({
     "loadOrderService",
     "deploymentService",
     "runtimeManager",
+    "availableModService",
     "assetRegistryService",
     "unrealMappingsService",
     "security"
@@ -1625,6 +1626,74 @@ export const ModLibrarySnapshotSchema = z.object({
 });
 export type ModLibrarySnapshot = z.infer<typeof ModLibrarySnapshotSchema>;
 
+export const AvailableModCategorySchema = z.enum(["prototype", "release"]);
+export type AvailableModCategory = z.infer<
+  typeof AvailableModCategorySchema
+>;
+
+export const AvailableModInstallScopeSchema = z.enum([
+  "hostOnly",
+  "everyone"
+]);
+export type AvailableModInstallScope = z.infer<
+  typeof AvailableModInstallScopeSchema
+>;
+
+export const AvailableModInstallStateSchema = z.enum([
+  "notInstalled",
+  "installed",
+  "sameIdentityInstalled",
+  "duplicateDifferentHash"
+]);
+export type AvailableModInstallState = z.infer<
+  typeof AvailableModInstallStateSchema
+>;
+
+export const AvailableModSchema = z
+  .object({
+    key: z.string().min(1),
+    category: AvailableModCategorySchema,
+    fileName: z.string().min(1),
+    id: z.string().min(1),
+    name: z.string().min(1),
+    version: z.string().min(1),
+    author: z.string().min(1),
+    description: z.string(),
+    loader: ModLoaderSchema,
+    packageIdentityId: z.string().min(1).nullable(),
+    sha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
+    installScope: AvailableModInstallScopeSchema,
+    installState: AvailableModInstallStateSchema,
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type AvailableMod = z.infer<typeof AvailableModSchema>;
+
+export const AvailableModGroupSchema = z
+  .object({
+    category: AvailableModCategorySchema,
+    title: z.string().min(1),
+    mods: z.array(AvailableModSchema)
+  })
+  .strict();
+export type AvailableModGroup = z.infer<typeof AvailableModGroupSchema>;
+
+export const AvailableModCatalogSchema = z
+  .object({
+    generatedAt: z.string(),
+    groups: z.array(AvailableModGroupSchema),
+    totals: z.object({
+      available: z.number().int().nonnegative(),
+      prototype: z.number().int().nonnegative(),
+      release: z.number().int().nonnegative(),
+      installed: z.number().int().nonnegative(),
+      problems: z.number().int().nonnegative()
+    }),
+    problems: z.array(ModProblemSchema)
+  })
+  .strict();
+export type AvailableModCatalog = z.infer<typeof AvailableModCatalogSchema>;
+
 export const PackageIdentityReplacementRequestSchema = z
   .object({
     action: z.literal("replaceMatchingIdentity"),
@@ -1660,6 +1729,26 @@ export const ImportModPackageResultSchema = z.object({
 });
 export type ImportModPackageResult = z.infer<
   typeof ImportModPackageResultSchema
+>;
+
+export const InstallAvailableModRequestSchema = z
+  .object({
+    key: z.string().min(1),
+    replacement: PackageIdentityReplacementRequestSchema.optional()
+  })
+  .strict();
+export type InstallAvailableModRequest = z.infer<
+  typeof InstallAvailableModRequestSchema
+>;
+
+export const InstallAvailableModResultSchema = z
+  .object({
+    result: ImportModPackageResultSchema,
+    catalog: AvailableModCatalogSchema
+  })
+  .strict();
+export type InstallAvailableModResult = z.infer<
+  typeof InstallAvailableModResultSchema
 >;
 
 export const ExternalModFormatSchema = z.enum([

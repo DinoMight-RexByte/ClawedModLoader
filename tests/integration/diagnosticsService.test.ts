@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ClawedGameAdapter } from "../../src/main/adapters/clawed/clawedGameAdapter";
 import { UE4SSDeploymentAdapter } from "../../src/main/adapters/ue4ss/ue4ssDeploymentAdapter";
 import { LocalAssetRegistryService } from "../../src/main/services/assetRegistryService";
+import { LocalAvailableModService } from "../../src/main/services/availableModService";
 import { LocalBackupService } from "../../src/main/services/backupService";
 import { ClawedModPackageService } from "../../src/main/services/clawedModPackageService";
 import { LocalDeploymentService } from "../../src/main/services/deploymentService";
@@ -241,6 +242,11 @@ describe("diagnostics service", () => {
         })
       },
       runtimeManager,
+      availableModService: new LocalAvailableModService(
+        packageService,
+        modLibraryService,
+        []
+      ),
       modLibraryService,
       externalImportService,
       assetRegistryService: new LocalAssetRegistryService(

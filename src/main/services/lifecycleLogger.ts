@@ -58,6 +58,7 @@ function normalizeLogCategory(
     loadOrderService: "PROFILE",
     deploymentService: "DEPLOYMENT",
     runtimeManager: "RUNTIME",
+    availableModService: "PACKAGE",
     assetRegistryService: "PACKAGE",
     unrealMappingsService: "RUNTIME",
     security: "SECURITY"

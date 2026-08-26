@@ -64,6 +64,9 @@ const api: CmmApi = {
     invoke(ipcContracts.importExternalModPackage, request),
   chooseAndImportModPackage: () =>
     invoke(ipcContracts.chooseAndImportModPackage, {}),
+  listAvailableMods: () => invoke(ipcContracts.listAvailableMods, {}),
+  installAvailableMod: (request) =>
+    invoke(ipcContracts.installAvailableMod, request),
   uninstallMod: (request) => invoke(ipcContracts.uninstallMod, request),
   setModEnabled: (request) => invoke(ipcContracts.setModEnabled, request),
   inspectModManifest: (request) =>

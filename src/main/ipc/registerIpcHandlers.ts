@@ -231,6 +231,14 @@ export function registerIpcHandlers(services: IpcServices): void {
     return importExternalModPackageWithPrompt(services, result.filePaths[0]);
   });
 
+  registerHandler(ipcContracts.listAvailableMods, () =>
+    services.availableModService.listAvailableMods()
+  );
+
+  registerHandler(ipcContracts.installAvailableMod, (request) =>
+    services.availableModService.installAvailableMod(request)
+  );
+
   registerHandler(ipcContracts.uninstallMod, async (request) => {
     const result = await services.modLibraryService.uninstallMod(request);
 
