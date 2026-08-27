@@ -182,6 +182,10 @@ const api: CmmApi = {
   getDiagnosticReport: () => invoke(ipcContracts.getDiagnosticReport, {}),
   getLatestErrorsReport: () =>
     invoke(ipcContracts.getLatestErrorsReport, {}),
+  getLogBundlePlan: (request) =>
+    invoke(ipcContracts.getLogBundlePlan, request),
+  chooseAndCreateLogBundle: (request) =>
+    invoke(ipcContracts.chooseAndCreateLogBundle, request),
   recordRendererError: (request) =>
     invoke(ipcContracts.recordRendererError, request),
   openLogs: () => invoke(ipcContracts.openLogs, {})

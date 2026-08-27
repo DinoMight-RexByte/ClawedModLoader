@@ -12,6 +12,7 @@ export type NavigationPage =
   | "loadOrder"
   | "modpacks"
   | "diagnostics"
+  | "logBundler"
   | "settings";
 
 interface AppStoreState {

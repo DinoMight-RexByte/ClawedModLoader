@@ -57,6 +57,10 @@ import type {
   LoadOrderSnapshot,
   LoadOrderValidation,
   LaunchMode,
+  LogBundleCreateRequest,
+  LogBundlePlan,
+  LogBundleRequest,
+  LogBundleResult,
   MoveModInOrderRequest,
   ModpackCompareRequest,
   ModpackCompareResult,
@@ -306,6 +310,8 @@ export interface DiagnosticsServiceContract extends ServiceHealthReporter {
   getDiagnosticsSummary(): Promise<DiagnosticsSummary>;
   getDiagnosticReport(): Promise<DiagnosticReport>;
   getLatestErrorsReport(): Promise<DiagnosticReport>;
+  getLogBundlePlan(request: LogBundleRequest): Promise<LogBundlePlan>;
+  createLogBundle(request: LogBundleCreateRequest): Promise<LogBundleResult>;
   recordRendererError(
     request: RendererErrorReportRequest
   ): Promise<RendererErrorReportResult>;

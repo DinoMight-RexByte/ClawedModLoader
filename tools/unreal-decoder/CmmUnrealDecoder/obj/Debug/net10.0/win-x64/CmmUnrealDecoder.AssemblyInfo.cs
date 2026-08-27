@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("CmmUnrealDecoder")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+229fb31309bbaf7ef916f9a6f1842891c68ec2b5")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+75d8d24e3b50b3753d4ac270cab3ceed865063a7")]
 [assembly: System.Reflection.AssemblyProductAttribute("CmmUnrealDecoder")]
 [assembly: System.Reflection.AssemblyTitleAttribute("CmmUnrealDecoder")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

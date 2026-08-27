@@ -2719,6 +2719,55 @@ export const LogOpenResultSchema = z.object({
 });
 export type LogOpenResult = z.infer<typeof LogOpenResultSchema>;
 
+export const LogBundleModeSchema = z.enum(["vanilla", "modded"]);
+export type LogBundleMode = z.infer<typeof LogBundleModeSchema>;
+
+export const LogBundleRequestSchema = z
+  .object({
+    mode: LogBundleModeSchema,
+    includeHardware: z.boolean()
+  })
+  .strict();
+export type LogBundleRequest = z.infer<typeof LogBundleRequestSchema>;
+
+export const LogBundleCreateRequestSchema = LogBundleRequestSchema.extend({
+  destinationPath: z.string().min(1)
+}).strict();
+export type LogBundleCreateRequest = z.infer<
+  typeof LogBundleCreateRequestSchema
+>;
+
+export const LogBundleSourceSchema = z.object({
+  label: z.string(),
+  scope: z.enum(["vanilla", "modded", "generated", "hardware"]),
+  sourcePath: z.string(),
+  archivePath: z.string(),
+  exists: z.boolean(),
+  included: z.boolean()
+});
+export type LogBundleSource = z.infer<typeof LogBundleSourceSchema>;
+
+export const LogBundlePlanSchema = z.object({
+  generatedAt: z.string(),
+  mode: LogBundleModeSchema,
+  fileName: z.string(),
+  steamBuildId: z.string().nullable(),
+  sources: z.array(LogBundleSourceSchema)
+});
+export type LogBundlePlan = z.infer<typeof LogBundlePlanSchema>;
+
+export const LogBundleResultSchema = z.object({
+  status: z.enum(["created", "cancelled", "failed"]),
+  bundlePath: z.string().nullable(),
+  fileName: z.string().nullable(),
+  steamBuildId: z.string().nullable(),
+  fileCount: z.number().int().nonnegative(),
+  bytesWritten: z.number().int().nonnegative().nullable(),
+  includedHardware: z.boolean(),
+  problems: z.array(ModProblemSchema)
+});
+export type LogBundleResult = z.infer<typeof LogBundleResultSchema>;
+
 export const DiagnosticLogsSummarySchema = z.object({
   logDirectory: z.string(),
   crashDumpsDirectory: z.string(),

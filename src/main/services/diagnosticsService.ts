@@ -1,15 +1,25 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { lstat, mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { shell } from "electron";
+import JSZip from "jszip";
 
 import type { DeploymentAdapterDescriptor } from "../../shared/contracts/deployment";
 import {
   DiagnosticReportSchema,
   DiagnosticsSummarySchema,
+  LogBundlePlanSchema,
+  LogBundleResultSchema,
   LogOpenResultSchema,
   type CreatorAssetRegistrySnapshot,
   type DiagnosticReport,
   type DiagnosticsSummary,
+  type LogBundleCreateRequest,
+  type LogBundlePlan,
+  type LogBundleRequest,
+  type LogBundleResult,
+  type LogBundleSource,
   type LoadOrderProblem,
   type ManagerOwnedFile,
   type ModProblem,
@@ -28,7 +38,13 @@ import {
   type LifecycleLogger
 } from "./lifecycleLogger";
 import { modProblem } from "./packageProblems";
+import { isPathInside } from "./packagePaths";
+import { getUe4ssLogPath } from "./runtimeValidationProbe";
 import type { MainServiceDependencies } from "./serviceRegistry";
+
+export interface DiagnosticsServiceOptions {
+  clawedLocalAppDataRoot?: string;
+}
 
 export class LocalDiagnosticsService implements DiagnosticsServiceContract {
   constructor(
@@ -36,7 +52,8 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     private readonly storageService: StorageServiceContract,
     private readonly adapters: DeploymentAdapterDescriptor[],
     private readonly gameAdapter: ClawedGameAdapter = new ClawedGameAdapter(),
-    private readonly logger: LifecycleLogger = new NullLifecycleLogger()
+    private readonly logger: LifecycleLogger = new NullLifecycleLogger(),
+    private readonly options: DiagnosticsServiceOptions = {}
   ) {}
 
   getStatus(): ServiceStatus {
@@ -191,6 +208,133 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     });
   }
 
+  async getLogBundlePlan(request: LogBundleRequest): Promise<LogBundlePlan> {
+    const context = await this.createLogBundleContext(request);
+    return LogBundlePlanSchema.parse({
+      generatedAt: context.generatedAt,
+      mode: request.mode,
+      fileName: context.fileName,
+      steamBuildId: context.steamBuildId,
+      sources: context.sources
+    });
+  }
+
+  async createLogBundle(
+    request: LogBundleCreateRequest
+  ): Promise<LogBundleResult> {
+    const context = await this.createLogBundleContext(request);
+    const zip = new JSZip();
+    const problems: ModProblem[] = [];
+    const copiedFiles: LogBundleManifestFile[] = [];
+
+    try {
+      await this.addGeneratedBundleFiles(zip, context, request, copiedFiles);
+
+      for (const source of context.sources.filter(
+        (source) =>
+          source.included &&
+          source.exists &&
+          source.scope !== "generated" &&
+          source.scope !== "hardware"
+      )) {
+        await addPathToZip(zip, source, copiedFiles, problems);
+      }
+
+      if (request.includeHardware) {
+        zip.file(
+          "generated/hardware-specs.json",
+          `${await collectHardwareSpecs()}\n`
+        );
+        copiedFiles.push({
+          archivePath: "generated/hardware-specs.json",
+          sourcePath: "Generated hardware summary",
+          size: null
+        });
+      }
+
+      zip.file(
+        "bundle-manifest.json",
+        `${JSON.stringify(
+          {
+            generatedAt: context.generatedAt,
+            mode: request.mode,
+            steamBuildId: context.steamBuildId,
+            includedHardware: request.includeHardware,
+            copiedFiles,
+            sources: context.sources,
+            problems
+          },
+          null,
+          2
+        )}\n`
+      );
+      copiedFiles.push({
+        archivePath: "bundle-manifest.json",
+        sourcePath: "Generated bundle inventory",
+        size: null
+      });
+
+      const archive = await zip.generateAsync({
+        type: "nodebuffer",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
+      });
+      await mkdir(path.dirname(request.destinationPath), { recursive: true });
+      await writeFile(request.destinationPath, archive);
+      await this.logger.log({
+        category: "APP",
+        action: "log_bundle_created",
+        result: "ok",
+        message: `${request.mode} log bundle created.`,
+        details: {
+          mode: request.mode,
+          includedHardware: request.includeHardware,
+          fileCount: copiedFiles.length
+        }
+      });
+
+      return LogBundleResultSchema.parse({
+        status: "created",
+        bundlePath: request.destinationPath,
+        fileName: path.basename(request.destinationPath),
+        steamBuildId: context.steamBuildId,
+        fileCount: copiedFiles.length,
+        bytesWritten: archive.byteLength,
+        includedHardware: request.includeHardware,
+        problems
+      });
+    } catch (error) {
+      const problem = modProblem(
+        "error",
+        "LOG_BUNDLE_FAILED",
+        "CMM could not create the log bundle.",
+        error instanceof Error ? error.message : String(error)
+      );
+      await this.logger.log({
+        category: "APP",
+        action: "log_bundle_created",
+        result: "failed",
+        errorCode: problem.code,
+        message: problem.message,
+        details: {
+          mode: request.mode,
+          includedHardware: request.includeHardware
+        }
+      });
+
+      return LogBundleResultSchema.parse({
+        status: "failed",
+        bundlePath: null,
+        fileName: path.basename(request.destinationPath),
+        steamBuildId: context.steamBuildId,
+        fileCount: 0,
+        bytesWritten: null,
+        includedHardware: request.includeHardware,
+        problems: [problem]
+      });
+    }
+  }
+
   async recordRendererError(
     request: RendererErrorReportRequest
   ): Promise<RendererErrorReportResult> {
@@ -256,6 +400,527 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
         .find((entry) => entry.action === action)?.occurredAt ?? null
     );
   }
+
+  private async createLogBundleContext(request: LogBundleRequest) {
+    const [layout, discovery, deployment] = await Promise.all([
+      this.storageService.getLayout(),
+      this.dependencies.gameLocator.discover(),
+      this.dependencies.deploymentService
+        .getSnapshot()
+        .catch(() => ({ activeManifest: null }))
+    ]);
+    const fingerprint = await this.gameAdapter.getFingerprint(discovery, null, {
+      mode: "quick"
+    });
+    const generatedAt = new Date().toISOString();
+    const steamBuildId = fingerprint.steamBuildId;
+    const fileName = logBundleFileName(request.mode, steamBuildId, new Date());
+    const sources = await this.logBundleSources(
+      request,
+      layout,
+      discovery,
+      deployment.activeManifest ?? null
+    );
+
+    return {
+      generatedAt,
+      steamBuildId,
+      fileName,
+      sources
+    };
+  }
+
+  private async addGeneratedBundleFiles(
+    zip: JSZip,
+    context: Awaited<ReturnType<LocalDiagnosticsService["createLogBundleContext"]>>,
+    request: LogBundleRequest,
+    copiedFiles: LogBundleManifestFile[]
+  ): Promise<void> {
+    const diagnosticReport = await this.getDiagnosticReport();
+    const readme = [
+      "Clawed Log Bundle",
+      "",
+      `Mode: ${request.mode}`,
+      `Steam build ID: ${context.steamBuildId ?? "unknown"}`,
+      `Generated: ${context.generatedAt}`,
+      `Hardware summary included: ${request.includeHardware ? "yes" : "no"}`,
+      "",
+      "CMM only read the source paths listed in bundle-manifest.json."
+    ].join("\n");
+
+    zip.file("generated/diagnostic-report.txt", `${diagnosticReport.text}\n`);
+    zip.file("README.txt", `${readme}\n`);
+    copiedFiles.push(
+      {
+        archivePath: "generated/diagnostic-report.txt",
+        sourcePath: "Generated CMM diagnostic report",
+        size: Buffer.byteLength(diagnosticReport.text)
+      },
+      {
+        archivePath: "README.txt",
+        sourcePath: "Generated bundle notes",
+        size: Buffer.byteLength(readme)
+      }
+    );
+  }
+
+  private async logBundleSources(
+    request: LogBundleRequest,
+    layout: Awaited<ReturnType<StorageServiceContract["getLayout"]>>,
+    discovery: DiagnosticsSummary["discovery"],
+    activeManifest: DiagnosticsSummary["deployment"]["activeManifest"]
+  ): Promise<LogBundleSource[]> {
+    const savedRoot = clawedSavedRoot(this.options.clawedLocalAppDataRoot);
+    const sources: Array<Omit<LogBundleSource, "exists">> = [
+      {
+        label: "Generated diagnostic report",
+        scope: "generated",
+        sourcePath: "Generated by CMM",
+        archivePath: "generated/diagnostic-report.txt",
+        included: true
+      },
+      {
+        label: "Generated bundle manifest",
+        scope: "generated",
+        sourcePath: "Generated by CMM",
+        archivePath: "bundle-manifest.json",
+        included: true
+      },
+      {
+        label: "Clawed game config",
+        scope: "vanilla",
+        sourcePath: path.join(savedRoot, "Config"),
+        archivePath: "clawed/Saved/Config",
+        included: true
+      },
+      {
+        label: "Clawed game logs",
+        scope: "vanilla",
+        sourcePath: path.join(savedRoot, "Logs"),
+        archivePath: "clawed/Saved/Logs",
+        included: true
+      },
+      {
+        label: "Clawed crash reports",
+        scope: "vanilla",
+        sourcePath: path.join(savedRoot, "Crashes"),
+        archivePath: "clawed/Saved/Crashes",
+        included: true
+      },
+      {
+        label: "Clawed save games",
+        scope: "vanilla",
+        sourcePath: path.join(savedRoot, "SaveGames"),
+        archivePath: "clawed/Saved/SaveGames",
+        included: true
+      },
+      {
+        label: "Steam app manifest",
+        scope: "vanilla",
+        sourcePath: discovery.appManifestPath ?? "Steam app manifest not found",
+        archivePath: "steam/appmanifest_3394840.acf",
+        included: Boolean(discovery.appManifestPath)
+      },
+      {
+        label: "Hardware specs",
+        scope: "hardware",
+        sourcePath: "Generated only when consent is enabled",
+        archivePath: "generated/hardware-specs.json",
+        included: request.includeHardware
+      }
+    ];
+
+    if (request.mode === "modded") {
+      sources.push(
+        {
+          label: "CMM lifecycle logs and evidence",
+          scope: "modded",
+          sourcePath: layout.directories.logs,
+          archivePath: "cmm/logs",
+          included: true
+        },
+        {
+          label: "CMM deployment manifests",
+          scope: "modded",
+          sourcePath: path.join(layout.directories.runtime, "deployments"),
+          archivePath: "cmm/runtime/deployments",
+          included: true
+        },
+        {
+          label: "CMM UE4SS runtime index",
+          scope: "modded",
+          sourcePath: path.join(
+            layout.directories.runtime,
+            "ue4ss",
+            "ue4ss-runtime.json"
+          ),
+          archivePath: "cmm/runtime/ue4ss-runtime.json",
+          included: true
+        },
+        {
+          label: "CMM profiles",
+          scope: "modded",
+          sourcePath: layout.directories.profiles,
+          archivePath: "cmm/profiles",
+          included: true
+        },
+        {
+          label: "Clawed save backups",
+          scope: "modded",
+          sourcePath: path.join(savedRoot, "SaveBackups"),
+          archivePath: "clawed/Saved/SaveBackups",
+          included: true
+        },
+        ...moddedRuntimeSources(discovery, activeManifest)
+      );
+    }
+
+    const unique = dedupeSources(sources);
+    return Promise.all(
+      unique.map(async (source) => ({
+        ...source,
+        exists:
+          source.scope === "generated" ||
+          source.scope === "hardware" ||
+          (source.included && (await pathExists(source.sourcePath)))
+      }))
+    );
+  }
+}
+
+interface LogBundleManifestFile {
+  archivePath: string;
+  sourcePath: string;
+  size: number | null;
+}
+
+async function addPathToZip(
+  zip: JSZip,
+  source: LogBundleSource,
+  copiedFiles: LogBundleManifestFile[],
+  problems: ModProblem[]
+): Promise<void> {
+  const sourceInfo = await lstat(source.sourcePath).catch(() => null);
+  if (!sourceInfo) {
+    return;
+  }
+  if (sourceInfo.isSymbolicLink()) {
+    problems.push(
+      modProblem(
+        "warning",
+        "LOG_BUNDLE_SYMLINK_SKIPPED",
+        "A linked file or folder was skipped.",
+        source.sourcePath
+      )
+    );
+    return;
+  }
+  if (sourceInfo.isDirectory()) {
+    await addDirectoryToZip(
+      zip,
+      source.sourcePath,
+      source.archivePath,
+      copiedFiles,
+      problems
+    );
+    return;
+  }
+  if (sourceInfo.isFile()) {
+    await addFileToZip(
+      zip,
+      source.sourcePath,
+      source.archivePath,
+      copiedFiles,
+      problems
+    );
+  }
+}
+
+async function addDirectoryToZip(
+  zip: JSZip,
+  root: string,
+  archiveRoot: string,
+  copiedFiles: LogBundleManifestFile[],
+  problems: ModProblem[]
+): Promise<void> {
+  const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const entryPath = path.join(root, entry.name);
+    const entryInfo = await lstat(entryPath).catch(() => null);
+    if (!entryInfo || !isPathInside(root, entryPath)) {
+      continue;
+    }
+    if (entryInfo.isSymbolicLink()) {
+      problems.push(
+        modProblem(
+          "warning",
+          "LOG_BUNDLE_SYMLINK_SKIPPED",
+          "A linked file or folder was skipped.",
+          entryPath
+        )
+      );
+      continue;
+    }
+    const archivePath = safeArchivePath(
+      path.join(archiveRoot, path.relative(root, entryPath))
+    );
+    if (entryInfo.isDirectory()) {
+      await addDirectoryToZip(zip, entryPath, archivePath, copiedFiles, problems);
+    } else if (entryInfo.isFile()) {
+      await addFileToZip(zip, entryPath, archivePath, copiedFiles, problems);
+    }
+  }
+}
+
+async function addFileToZip(
+  zip: JSZip,
+  sourcePath: string,
+  archivePath: string,
+  copiedFiles: LogBundleManifestFile[],
+  problems: ModProblem[]
+): Promise<void> {
+  try {
+    const content = await readFile(sourcePath);
+    const safePath = safeArchivePath(archivePath);
+    zip.file(safePath, content);
+    copiedFiles.push({
+      archivePath: safePath,
+      sourcePath,
+      size: content.byteLength
+    });
+  } catch (error) {
+    problems.push(
+      modProblem(
+        "warning",
+        "LOG_BUNDLE_FILE_SKIPPED",
+        "A file could not be copied into the log bundle.",
+        `${sourcePath}: ${error instanceof Error ? error.message : String(error)}`
+      )
+    );
+  }
+}
+
+function dedupeSources(
+  sources: Array<Omit<LogBundleSource, "exists">>
+): Array<Omit<LogBundleSource, "exists">> {
+  const seen = new Set<string>();
+  const deduped: Array<Omit<LogBundleSource, "exists">> = [];
+  for (const source of sources) {
+    const key = `${source.scope}:${source.sourcePath.toLowerCase()}:${source.archivePath.toLowerCase()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(source);
+    }
+  }
+  return deduped;
+}
+
+function moddedRuntimeSources(
+  discovery: DiagnosticsSummary["discovery"],
+  activeManifest: DiagnosticsSummary["deployment"]["activeManifest"]
+): Array<Omit<LogBundleSource, "exists">> {
+  const gameInstallPath = discovery.gameInstallPath;
+  const gameExecutable = discovery.gameExecutable;
+  const candidates = new Set<string>();
+
+  if (gameInstallPath && activeManifest) {
+    candidates.add(getUe4ssLogPath(gameInstallPath, activeManifest.runtimeConfiguration));
+    for (const file of activeManifest.runtimeGeneratedFiles) {
+      if (path.basename(file.absolutePath).toLowerCase() === "ue4ss.log") {
+        candidates.add(file.absolutePath);
+      }
+    }
+    addRuntimeConfigCandidates(
+      candidates,
+      gameInstallPath,
+      activeManifest.runtimeConfiguration
+    );
+  }
+
+  if (gameInstallPath) {
+    candidates.add(path.join(gameInstallPath, "UE4SS.log"));
+  }
+
+  if (gameExecutable) {
+    const binaryDirectory = path.dirname(gameExecutable);
+    candidates.add(path.join(binaryDirectory, "UE4SS.log"));
+    candidates.add(path.join(binaryDirectory, "ue4ss", "UE4SS.log"));
+    candidates.add(path.join(binaryDirectory, "Mods", "mods.txt"));
+    candidates.add(path.join(binaryDirectory, "Mods", "cmm-profile.json"));
+    candidates.add(path.join(binaryDirectory, "ue4ss", "Mods", "mods.txt"));
+    candidates.add(
+      path.join(binaryDirectory, "ue4ss", "Mods", "cmm-profile.json")
+    );
+  }
+
+  return [...candidates].map((sourcePath) => ({
+    label: runtimeSourceLabel(sourcePath),
+    scope: "modded" as const,
+    sourcePath,
+    archivePath: archivePathForGameSource(gameInstallPath, sourcePath),
+    included: true
+  }));
+}
+
+function addRuntimeConfigCandidates(
+  candidates: Set<string>,
+  gameInstallPath: string,
+  configuration: Record<string, unknown>
+): void {
+  const runtimeTarget =
+    typeof configuration.runtimeTargetRelativePath === "string"
+      ? configuration.runtimeTargetRelativePath
+      : "";
+  const runtimeMods =
+    typeof configuration.runtimeModsRelativePath === "string"
+      ? configuration.runtimeModsRelativePath
+      : "Mods";
+  const modsRoot = path.join(gameInstallPath, runtimeTarget, runtimeMods);
+  candidates.add(path.join(modsRoot, "mods.txt"));
+  candidates.add(path.join(modsRoot, "cmm-profile.json"));
+}
+
+function runtimeSourceLabel(sourcePath: string): string {
+  const fileName = path.basename(sourcePath).toLowerCase();
+  if (fileName === "ue4ss.log") {
+    return "UE4SS runtime log";
+  }
+  if (fileName === "mods.txt") {
+    return "UE4SS load order file";
+  }
+  if (fileName === "cmm-profile.json") {
+    return "CMM deployed runtime profile";
+  }
+  return "Modded runtime file";
+}
+
+function archivePathForGameSource(
+  gameInstallPath: string | null,
+  sourcePath: string
+): string {
+  if (gameInstallPath && isPathInside(gameInstallPath, sourcePath)) {
+    return safeArchivePath(
+      path.join("modded-runtime", path.relative(gameInstallPath, sourcePath))
+    );
+  }
+  return safeArchivePath(path.join("modded-runtime", path.basename(sourcePath)));
+}
+
+function logBundleFileName(
+  mode: LogBundleRequest["mode"],
+  steamBuildId: string | null,
+  date: Date
+): string {
+  const modeLabel = mode === "modded" ? "Modded" : "Vanilla";
+  const buildId = steamBuildId?.trim() || "unknown-build";
+  const month = [
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec"
+  ][date.getMonth()];
+  return `${modeLabel}_ClawedLogs_${buildId}_${month}-${date.getDate()}-${date.getFullYear()}.zip`;
+}
+
+function clawedSavedRoot(localAppDataRoot?: string): string {
+  return path.join(defaultLocalAppDataRoot(localAppDataRoot), "Clawed", "Saved");
+}
+
+function defaultLocalAppDataRoot(localAppDataRoot?: string): string {
+  const configured = localAppDataRoot?.trim();
+  if (configured && !configured.includes("\0")) {
+    return configured;
+  }
+  const localAppData = process.env.LOCALAPPDATA?.trim();
+  if (localAppData) {
+    return localAppData;
+  }
+  const userProfile = process.env.USERPROFILE?.trim();
+  return userProfile ? path.join(userProfile, "AppData", "Local") : "";
+}
+
+async function collectHardwareSpecs(): Promise<string> {
+  const base = {
+    generatedAt: new Date().toISOString(),
+    platform: process.platform,
+    arch: process.arch,
+    osRelease: os.release(),
+    osVersion: os.version(),
+    totalMemoryBytes: os.totalmem(),
+    cpuModel: os.cpus()[0]?.model ?? null,
+    logicalCpuCount: os.cpus().length
+  };
+  const windows = process.platform === "win32"
+    ? await collectWindowsHardwareSpecs().catch((error) => ({
+        error: error instanceof Error ? error.message : String(error)
+      }))
+    : null;
+
+  return JSON.stringify(
+    {
+      note:
+        "Generated only after the user enabled hardware-spec consent in CMM Log Bundler.",
+      base,
+      windows
+    },
+    null,
+    2
+  );
+}
+
+function collectWindowsHardwareSpecs(): Promise<unknown> {
+  const command = [
+    "$os = Get-CimInstance Win32_OperatingSystem | Select-Object Caption,Version,BuildNumber",
+    "$cpu = Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed",
+    "$gpu = Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,AdapterRAM",
+    "[PSCustomObject]@{OperatingSystem=$os;Processor=$cpu;VideoController=$gpu} | ConvertTo-Json -Depth 5 -Compress"
+  ].join("; ");
+
+  return new Promise((resolve, reject) => {
+    execFile(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        command
+      ],
+      {
+        maxBuffer: 1024 * 1024,
+        timeout: 10_000,
+        windowsHide: true
+      },
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout.trim()));
+        } catch {
+          resolve({ raw: stdout.trim() });
+        }
+      }
+    );
+  });
+}
+
+function safeArchivePath(value: string): string {
+  return value
+    .replaceAll("\\", "/")
+    .split("/")
+    .filter((segment) => segment.length > 0 && segment !== "." && segment !== "..")
+    .join("/");
 }
 
 function isDependencyProblem(problem: LoadOrderProblem): boolean {

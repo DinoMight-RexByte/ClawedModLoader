@@ -14,6 +14,9 @@ import {
   InstallAvailableModResultSchema,
   LaunchCommandResultSchema,
   LaunchCommandRequestSchema,
+  LogBundlePlanSchema,
+  LogBundleRequestSchema,
+  LogBundleResultSchema,
   PlaySnapshotSchema,
   RecordUe4ssRuntimeValidationRequestSchema,
   RendererErrorReportRequestSchema,
@@ -176,6 +179,54 @@ describe("IPC contracts", () => {
         message: "x".repeat(501)
       })
     ).toThrow();
+  });
+
+  it("validates log bundle requests and results", () => {
+    expect(
+      LogBundleRequestSchema.parse({
+        mode: "modded",
+        includeHardware: true
+      })
+    ).toEqual({
+      mode: "modded",
+      includeHardware: true
+    });
+    expect(() =>
+      LogBundleRequestSchema.parse({
+        mode: "profile",
+        includeHardware: true
+      })
+    ).toThrow();
+    expect(
+      LogBundlePlanSchema.parse({
+        generatedAt: new Date().toISOString(),
+        mode: "vanilla",
+        fileName: "Vanilla_ClawedLogs_24962487_aug-27-2026.zip",
+        steamBuildId: "24962487",
+        sources: [
+          {
+            label: "Clawed save games",
+            scope: "vanilla",
+            sourcePath: "C:\\Users\\Tester\\AppData\\Local\\Clawed\\Saved\\SaveGames",
+            archivePath: "clawed/Saved/SaveGames",
+            exists: true,
+            included: true
+          }
+        ]
+      }).fileName
+    ).toContain("ClawedLogs");
+    expect(
+      LogBundleResultSchema.parse({
+        status: "created",
+        bundlePath: "C:\\Bundles\\Vanilla_ClawedLogs_24962487_aug-27-2026.zip",
+        fileName: "Vanilla_ClawedLogs_24962487_aug-27-2026.zip",
+        steamBuildId: "24962487",
+        fileCount: 3,
+        bytesWritten: 1024,
+        includedHardware: false,
+        problems: []
+      })
+    ).toMatchObject({ status: "created", fileCount: 3 });
   });
 
   it("validates external mod inspection results", () => {

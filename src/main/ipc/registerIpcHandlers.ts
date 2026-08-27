@@ -1,4 +1,5 @@
-import { dialog, ipcMain } from "electron";
+import { app, dialog, ipcMain } from "electron";
+import path from "node:path";
 import { ZodError } from "zod";
 
 import {
@@ -678,6 +679,43 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.diagnosticsService.getLatestErrorsReport()
   );
 
+  registerHandler(ipcContracts.getLogBundlePlan, (request) =>
+    services.diagnosticsService.getLogBundlePlan(request)
+  );
+
+  registerHandler(ipcContracts.chooseAndCreateLogBundle, async (request) => {
+    const plan = await services.diagnosticsService.getLogBundlePlan(request);
+    const result = await dialog.showSaveDialog({
+      title: "Save Clawed log bundle",
+      defaultPath: path.join(app.getPath("downloads"), plan.fileName),
+      filters: [{ name: "ZIP Archives", extensions: ["zip"] }]
+    });
+
+    if (result.canceled || !result.filePath) {
+      return {
+        status: "cancelled" as const,
+        bundlePath: null,
+        fileName: plan.fileName,
+        steamBuildId: plan.steamBuildId,
+        fileCount: 0,
+        bytesWritten: null,
+        includedHardware: request.includeHardware,
+        problems: [
+          {
+            severity: "info" as const,
+            code: "LOG_BUNDLE_CANCELLED",
+            message: "No log bundle path was selected."
+          }
+        ]
+      };
+    }
+
+    return services.diagnosticsService.createLogBundle({
+      ...request,
+      destinationPath: ensureZipExtension(result.filePath)
+    });
+  });
+
   registerHandler(ipcContracts.recordRendererError, (request) =>
     services.diagnosticsService.recordRendererError(request)
   );
@@ -698,6 +736,12 @@ function sanitizeFileName(fileName: string): string {
     .trim();
 
   return sanitized || "profile";
+}
+
+function ensureZipExtension(filePath: string): string {
+  return path.extname(filePath).toLowerCase() === ".zip"
+    ? filePath
+    : `${filePath}.zip`;
 }
 
 function meshExportDialogFilter(format: "obj" | "gltf" | "glb"): {

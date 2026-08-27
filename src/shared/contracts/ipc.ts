@@ -54,6 +54,9 @@ import {
   LoadOrderActionResultSchema,
   LoadOrderSnapshotSchema,
   LoadOrderValidationSchema,
+  LogBundlePlanSchema,
+  LogBundleRequestSchema,
+  LogBundleResultSchema,
   LogOpenResultSchema,
   ManualGameDirectoryRequestSchema,
   ModIdentityRequestSchema,
@@ -143,6 +146,9 @@ import type {
   LoadOrderActionResult,
   LoadOrderSnapshot,
   LoadOrderValidation,
+  LogBundlePlan,
+  LogBundleRequest,
+  LogBundleResult,
   LogOpenResult,
   ManualGameDirectoryRequest,
   MoveModInOrderRequest,
@@ -262,6 +268,8 @@ export const IPC_CHANNELS = {
   getDiagnosticsSummary: "cmm:diagnostics:getSummary",
   getDiagnosticReport: "cmm:diagnostics:getReport",
   getLatestErrorsReport: "cmm:diagnostics:getLatestErrors",
+  getLogBundlePlan: "cmm:diagnostics:getLogBundlePlan",
+  chooseAndCreateLogBundle: "cmm:diagnostics:chooseAndCreateLogBundle",
   recordRendererError: "cmm:diagnostics:recordRendererError",
   openLogs: "cmm:diagnostics:openLogs"
 } as const;
@@ -682,6 +690,16 @@ export const ipcContracts = {
     requestSchema: EmptyRequestSchema,
     responseSchema: DiagnosticReportSchema
   } satisfies IpcContract<EmptyRequest, DiagnosticReport>,
+  getLogBundlePlan: {
+    channel: IPC_CHANNELS.getLogBundlePlan,
+    requestSchema: LogBundleRequestSchema,
+    responseSchema: LogBundlePlanSchema
+  } satisfies IpcContract<LogBundleRequest, LogBundlePlan>,
+  chooseAndCreateLogBundle: {
+    channel: IPC_CHANNELS.chooseAndCreateLogBundle,
+    requestSchema: LogBundleRequestSchema,
+    responseSchema: LogBundleResultSchema
+  } satisfies IpcContract<LogBundleRequest, LogBundleResult>,
   recordRendererError: {
     channel: IPC_CHANNELS.recordRendererError,
     requestSchema: RendererErrorReportRequestSchema,
@@ -842,6 +860,10 @@ export interface CmmApi {
   getDiagnosticsSummary(): Promise<DiagnosticsSummary>;
   getDiagnosticReport(): Promise<DiagnosticReport>;
   getLatestErrorsReport(): Promise<DiagnosticReport>;
+  getLogBundlePlan(request: LogBundleRequest): Promise<LogBundlePlan>;
+  chooseAndCreateLogBundle(
+    request: LogBundleRequest
+  ): Promise<LogBundleResult>;
   recordRendererError(
     request: RendererErrorReportRequest
   ): Promise<RendererErrorReportResult>;

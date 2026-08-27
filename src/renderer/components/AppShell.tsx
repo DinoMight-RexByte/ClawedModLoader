@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Download,
+  FileArchive,
   FolderTree,
   Gauge,
   PackageOpen,
@@ -55,6 +56,11 @@ const navigationItems: Array<{
     id: "diagnostics",
     label: "Diagnostics",
     icon: <Gauge aria-hidden="true" size={18} />
+  },
+  {
+    id: "logBundler",
+    label: "Log Bundler",
+    icon: <FileArchive aria-hidden="true" size={18} />
   },
   {
     id: "settings",

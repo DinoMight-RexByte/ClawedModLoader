@@ -7,6 +7,7 @@ import { AvailableModsPage } from "./pages/AvailableModsPage";
 import { CreatorAssetsPage } from "./pages/CreatorAssetsPage";
 import { CreatorViewportWindowPage } from "./pages/CreatorViewportWindowPage";
 import { DiagnosticsPage } from "./pages/DiagnosticsPage";
+import { LogBundlerPage } from "./pages/LogBundlerPage";
 import { LoadOrderPage } from "./pages/LoadOrderPage";
 import { ModsPage } from "./pages/ModsPage";
 import { ModpacksPage } from "./pages/ModpacksPage";
@@ -33,6 +34,7 @@ export function App(): ReactElement {
       {activePage === "loadOrder" ? <LoadOrderPage /> : null}
       {activePage === "modpacks" ? <ModpacksPage /> : null}
       {activePage === "diagnostics" ? <DiagnosticsPage /> : null}
+      {activePage === "logBundler" ? <LogBundlerPage /> : null}
       {activePage === "settings" ? <SettingsPage /> : null}
       <FirstRunOnboarding />
     </AppShell>

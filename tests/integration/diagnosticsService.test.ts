@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import JSZip from "jszip";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -328,5 +329,228 @@ describe("diagnostics service", () => {
     expect(summary.logs.crashDumpsDirectory).toBe(
       path.join(tempRoot, "logs", "crash-dumps")
     );
+  });
+
+  it("creates modded log bundles from Clawed and CMM sources", async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-log-bundle-"));
+    const storageService = new FakeStorageService(createStorageLayout(tempRoot));
+    const logger = new JsonlLifecycleLogger(storageService);
+    const packageService = new ClawedModPackageService();
+    const modLibraryService = new LocalModLibraryService(
+      storageService,
+      packageService
+    );
+    const externalImportService = new LocalExternalModImportService(
+      storageService,
+      packageService,
+      modLibraryService
+    );
+    const profileService = new LocalProfileService(
+      storageService,
+      modLibraryService
+    );
+    const loadOrderService = new LocalLoadOrderService(profileService);
+    const runtimeManager = new LocalRuntimeManager(storageService, logger);
+    const settingsService = new JsonSettingsService(storageService);
+    const gameAdapter = new ClawedGameAdapter();
+    const deploymentService = new LocalDeploymentService(
+      storageService,
+      modLibraryService,
+      profileService,
+      loadOrderService,
+      runtimeManager,
+      new UE4SSDeploymentAdapter(),
+      logger,
+      { settingsService },
+      gameAdapter
+    );
+    const backupService = new LocalBackupService(storageService, logger);
+    const gameInstallPath = path.join(tempRoot, "fake-game");
+    const gameExecutable = path.join(
+      gameInstallPath,
+      "Clawed",
+      "Binaries",
+      "Win64",
+      "ClawedFake.exe"
+    );
+    const appManifestPath = path.join(tempRoot, "appmanifest_3394840.acf");
+    const localAppDataRoot = path.join(tempRoot, "local-app-data");
+    const savedRoot = path.join(localAppDataRoot, "Clawed", "Saved");
+    await mkdir(path.dirname(gameExecutable), { recursive: true });
+    await mkdir(path.join(savedRoot, "Config", "Windows"), { recursive: true });
+    await mkdir(path.join(savedRoot, "Logs"), { recursive: true });
+    await mkdir(path.join(savedRoot, "SaveGames", "savegame_1"), {
+      recursive: true
+    });
+    await mkdir(path.join(path.dirname(gameExecutable), "ue4ss"), {
+      recursive: true
+    });
+    await writeFile(gameExecutable, "fake executable");
+    await writeFile(
+      appManifestPath,
+      `"AppState"\n{\n  "appid" "3394840"\n  "buildid" "24962487"\n}\n`
+    );
+    await writeFile(
+      path.join(savedRoot, "Config", "Windows", "GameUserSettings.ini"),
+      "sg.ViewDistanceQuality=0\n"
+    );
+    await writeFile(path.join(savedRoot, "Logs", "Clawed.log"), "game log\n");
+    await writeFile(
+      path.join(
+        savedRoot,
+        "SaveGames",
+        "savegame_1",
+        "Default__BP_CustomSaveGameObject_C.sav"
+      ),
+      "save bytes"
+    );
+    await writeFile(
+      path.join(path.dirname(gameExecutable), "ue4ss", "UE4SS.log"),
+      "ue4ss log"
+    );
+    await logger.log({
+      category: "APP",
+      action: "bundle_fixture",
+      result: "ok"
+    });
+    const discovery: GameDiscovery = {
+      appId: CLAWED_STEAM_APP_ID,
+      steamPath: tempRoot,
+      steamLibrary: tempRoot,
+      steamLibraries: [{ path: tempRoot, appManifestPath }],
+      appManifestPath,
+      gameInstallPath,
+      gameExecutable,
+      discoveryStatus: "READY",
+      source: "steam",
+      manualOverride: null,
+      diagnosticErrors: [],
+      discoveredAt: new Date().toISOString()
+    };
+    const dependencies = {
+      gameLocator: new FakeGameLocator(discovery),
+      processSupervisor: new FakeProcessSupervisor(),
+      launchService: new FakeLaunchService(),
+      deploymentService,
+      packagedRuntimeValidationService: {
+        getStatus: () => ({
+          id: "packagedRuntimeValidationService",
+          label: "Packaged Runtime Validation Service",
+          status: "ready" as const,
+          detail: "fake"
+        }),
+        validate: async () => ({
+          status: "blocked" as const,
+          evidencePath: null,
+          recording: null,
+          problems: []
+        }),
+        cancel: async () => ({
+          status: "blocked" as const,
+          evidencePath: null,
+          recording: null,
+          problems: []
+        })
+      },
+      unrealMappingsService: {
+        getStatus: () => ({
+          id: "unrealMappingsService",
+          label: "Unreal Mappings Service",
+          status: "ready" as const,
+          detail: "fake"
+        }),
+        generateMappings: async () => ({
+          status: "blocked" as const,
+          mappingsPath: null,
+          evidencePath: null,
+          problems: []
+        })
+      },
+      runtimeManager,
+      availableModService: new LocalAvailableModService(
+        packageService,
+        modLibraryService,
+        []
+      ),
+      modLibraryService,
+      externalImportService,
+      assetRegistryService: new LocalAssetRegistryService(
+        modLibraryService,
+        profileService,
+        loadOrderService,
+        deploymentService,
+        { mapRoot: path.join(tempRoot, "missing-map") }
+      ),
+      profileService,
+      loadOrderService,
+      packageService,
+      exportImportService: {
+        getStatus: () => ({
+          id: "exportImportService",
+          label: "Export Import Service",
+          status: "ready" as const,
+          detail: "fake"
+        }),
+        exportCurrentProfile: async () => {
+          throw new Error("not used");
+        },
+        inspectModpack: async () => {
+          throw new Error("not used");
+        },
+        importModpack: async () => {
+          throw new Error("not used");
+        },
+        compareCurrentProfileToModpack: async () => {
+          throw new Error("not used");
+        },
+        listRecentModpacks: async () => ({ entries: [] }),
+        acceptMissingModpackReferences: async () => ({
+          status: "ok" as const,
+          entriesUpdated: 0,
+          removedPackageCount: 0,
+          history: { entries: [] },
+          problems: []
+        })
+      },
+      backupService
+    } satisfies MainServiceDependencies;
+    const diagnostics = new LocalDiagnosticsService(
+      dependencies,
+      storageService,
+      [gameAdapter.descriptor],
+      gameAdapter,
+      logger,
+      { clawedLocalAppDataRoot: localAppDataRoot }
+    );
+
+    const plan = await diagnostics.getLogBundlePlan({
+      mode: "modded",
+      includeHardware: false
+    });
+    const destinationPath = path.join(tempRoot, plan.fileName);
+    const result = await diagnostics.createLogBundle({
+      mode: "modded",
+      includeHardware: false,
+      destinationPath
+    });
+    const archive = await JSZip.loadAsync(await readFile(destinationPath));
+
+    expect(plan.fileName).toContain("Modded_ClawedLogs_24962487_");
+    expect(result.status).toBe("created");
+    expect(archive.file("clawed/Saved/Logs/Clawed.log")).toBeTruthy();
+    expect(
+      archive.file("clawed/Saved/Config/Windows/GameUserSettings.ini")
+    ).toBeTruthy();
+    expect(
+      archive.file(
+        "clawed/Saved/SaveGames/savegame_1/Default__BP_CustomSaveGameObject_C.sav"
+      )
+    ).toBeTruthy();
+    expect(archive.file("cmm/logs/lifecycle.jsonl")).toBeTruthy();
+    expect(
+      archive.file("modded-runtime/Clawed/Binaries/Win64/ue4ss/UE4SS.log")
+    ).toBeTruthy();
+    expect(archive.file("generated/hardware-specs.json")).toBeNull();
+    expect(archive.file("bundle-manifest.json")).toBeTruthy();
   });
 });
