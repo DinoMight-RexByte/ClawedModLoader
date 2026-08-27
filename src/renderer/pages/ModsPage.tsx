@@ -245,6 +245,7 @@ function firstText(values: Array<string | undefined | null>): string | undefined
 export function ModsPage(): ReactElement {
   const profileRevision = useAppStore((state) => state.profileRevision);
   const bumpProfileRevision = useAppStore((state) => state.bumpProfileRevision);
+  const setActivePage = useAppStore((state) => state.setActivePage);
   const [mods, setMods] = useState<InstalledModVersion[]>([]);
   const [search, setSearch] = useState("");
   const [enabledFilter, setEnabledFilter] = useState<EnabledFilter>("all");
@@ -268,6 +269,13 @@ export function ModsPage(): ReactElement {
   const [readme, setReadme] = useState<string | null>(null);
   const hasErrorProblems = problems.some(
     (problem) => problem.severity === "error"
+  );
+  const canOpenAvailableMods = problems.some((problem) =>
+    [
+      "UNREAL_SOURCE_PLUGIN_UNSUPPORTED",
+      "ZIP_PAYLOAD_NOT_RECOGNIZED",
+      "EXTERNAL_IMPORT_UNSUPPORTED"
+    ].includes(problem.code)
   );
 
   const refreshMods = useCallback(async () => {
@@ -631,6 +639,16 @@ export function ModsPage(): ReactElement {
           <div className="mt-3">
             <ProblemDetails problems={problems} />
           </div>
+          {canOpenAvailableMods ? (
+            <button
+              className="mt-3 inline-flex h-10 items-center gap-2 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+              onClick={() => setActivePage("availableMods")}
+              type="button"
+            >
+              <PackagePlus aria-hidden="true" size={17} />
+              Open Available Mods
+            </button>
+          ) : null}
         </section>
       ) : null}
 

@@ -1758,6 +1758,7 @@ export const ExternalModFormatSchema = z.enum([
   "thunderstore",
   "ue4ssArchive",
   "fomod",
+  "unrealSourcePlugin",
   "genericZip",
   "unsupportedArchive",
   "blockedExecutable"

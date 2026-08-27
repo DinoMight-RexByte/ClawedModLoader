@@ -20,6 +20,7 @@ import type {
 } from "../../shared/contracts/app";
 import { useAppStore } from "../stores/appStore";
 import { ModalDialog } from "./ModalDialog";
+import { PackagedRuntimeValidationAction } from "./PackagedRuntimeValidationAction";
 import { ProblemDetails } from "./ProblemDetails";
 
 const onboardingStorageKey = "cmm.onboardingDismissed";
@@ -287,6 +288,12 @@ export function FirstRunOnboarding(): ReactElement | null {
                     : "No runtime is configured yet. Use the packaged runtime or import a different UE4SS ZIP."}
               </div>
               <ProblemDetails problems={collectRuntimeProblems(runtime)} />
+              <PackagedRuntimeValidationAction
+                disabled={busy}
+                onBusyChange={setBusy}
+                onRuntimeChanged={setRuntime}
+                runtime={runtime}
+              />
               <div className="flex flex-wrap gap-2">
                 <button
                   className="inline-flex h-10 items-center gap-2 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"

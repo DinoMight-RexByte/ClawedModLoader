@@ -3187,6 +3187,30 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   await expect(page.getByText("Logs folder opened.")).toBeVisible();
 });
 
+test("validates an unvalidated packaged runtime during first-run setup", async ({
+  page
+}) => {
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Continue" }).click();
+  await page.getByRole("button", { name: "Use Packaged Runtime" }).click();
+  await expect(
+    page.getByRole("button", { name: "Validate Packaged Runtime" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "Validate Packaged Runtime" }).click();
+
+  await expect(
+    page.getByText("Runtime validated for this Clawed build.")
+  ).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__cmmRuntimeValidated))
+    .toBe(true);
+  await expect(
+    page.getByRole("button", { name: "Validate Packaged Runtime" })
+  ).toBeHidden();
+});
+
 test("launches modded without packaged runtime validation confirmation", async ({
   page
 }) => {

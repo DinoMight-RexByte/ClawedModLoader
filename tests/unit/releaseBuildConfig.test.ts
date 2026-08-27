@@ -18,7 +18,9 @@ describe("release build config", () => {
       "assets/branding",
       "assets/runtime",
       "assets/unreal-decoder",
-      ".codex/clawed-game-file-map/20260814-current"
+      ".codex/clawed-game-file-map/20260814-current",
+      "release/official-launch-mods",
+      "release/prototype-mods"
     ]);
 
     for (const blocked of [
@@ -46,6 +48,16 @@ describe("release build config", () => {
       from: ".codex/clawed-game-file-map/20260814-current",
       to: "clawed-game-file-map/20260814-current"
     });
+    expect(build.extraResources).toContainEqual({
+      from: "release/official-launch-mods",
+      to: "available-mods/official-launch-mods",
+      filter: ["**/*"]
+    });
+    expect(build.extraResources).toContainEqual({
+      from: "release/prototype-mods",
+      to: "available-mods/prototype-mods",
+      filter: ["**/*"]
+    });
   });
 
   it("keeps the official launch mod bundle as an explicit packaging step", () => {
@@ -63,7 +75,14 @@ describe("release build config", () => {
     expect(packageJson.scripts["package:available-mods"]).toBe(
       "npm run package:manual-qa && npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
     );
+    expect(packageJson.scripts.package).toContain("npm run package:available-mods");
     expect(packageJson.scripts.dist).toContain("npm run package:available-mods");
+    expect(packageJson.scripts.package.indexOf("npm run package:available-mods")).toBeLessThan(
+      packageJson.scripts.package.indexOf("electron-builder")
+    );
+    expect(packageJson.scripts.dist.indexOf("npm run package:available-mods")).toBeLessThan(
+      packageJson.scripts.dist.indexOf("electron-builder")
+    );
     expect(packageJson.scripts["package:available-mods"]).not.toContain(
       "package:coop-reliability-plugin"
     );
@@ -101,9 +120,14 @@ describe("release build config", () => {
     expect(packageJson.scripts["release:github"]).toContain(
       "--config.forceCodeSigning=true"
     );
-    expect(packageJson.scripts["release:github"]).not.toContain(
-      "package:available-mods"
+    expect(packageJson.scripts["release:github"]).toContain(
+      "npm run package:available-mods"
     );
+    expect(
+      packageJson.scripts["release:github"].indexOf(
+        "npm run package:available-mods"
+      )
+    ).toBeLessThan(packageJson.scripts["release:github"].indexOf("electron-builder"));
     expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(false);
     expect(packageJson.build.win.signtoolOptions).toEqual({
       signingHashAlgorithms: ["sha256"],

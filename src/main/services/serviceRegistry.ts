@@ -221,9 +221,7 @@ function getBundledUe4ssRuntimePath(): string {
 }
 
 function getAvailableModSourceDirectories() {
-  const root = getReleaseCompanionRoot();
-
-  return [
+  return getAvailableModRoots().flatMap((root) => [
     {
       category: "release" as const,
       title: "Official Release Mods",
@@ -234,7 +232,21 @@ function getAvailableModSourceDirectories() {
       title: "Prototype Mods",
       directory: path.join(root, "prototype-mods")
     }
-  ];
+  ]);
+}
+
+function getAvailableModRoots(): string[] {
+  const roots: string[] = [];
+  const electronProcess = process as NodeJS.Process & {
+    resourcesPath?: string;
+  };
+
+  if (app.isPackaged && electronProcess.resourcesPath) {
+    roots.push(path.join(electronProcess.resourcesPath, "available-mods"));
+  }
+
+  roots.push(getReleaseCompanionRoot());
+  return roots;
 }
 
 function getReleaseCompanionRoot(): string {

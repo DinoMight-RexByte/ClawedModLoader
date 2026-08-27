@@ -424,6 +424,29 @@ export class LocalExternalModImportService
       });
     }
 
+    if (hasUnrealSourcePluginLayout(context.entries)) {
+      return this.result({
+        status: "recognized",
+        format: "unrealSourcePlugin",
+        support: "inspectOnly",
+        loader: null,
+        sourcePath: packagePath,
+        fileName,
+        sha256,
+        detectedName: displayNameFromFileName(fileName),
+        detectedVersion: null,
+        entryCount: context.entries.length,
+        problems: [
+          modProblem(
+            "warning",
+            "UNREAL_SOURCE_PLUGIN_UNSUPPORTED",
+            "This ZIP is a developer Unreal source plugin, not an installable CMM mod. Use Available Mods to install Co-op Capacity 8 for the increased co-op limit.",
+            "Detected a .uplugin file and Unreal Source/*.Build.cs files. CMM installs .clawedmod, Pak, IoStore, and UE4SS Lua packages only."
+          )
+        ]
+      });
+    }
+
     const thunderstore = await this.readThunderstoreManifest(context.zip);
     const payload = classifyZipPayload(context.entries);
     const ioStoreOnly = hasIoStoreOnly(payload.assetEntries);
@@ -1242,6 +1265,17 @@ function hasFomodLayout(entries: ZipEntryInfo[]): boolean {
       normalizedName.startsWith("fomod/")
     );
   });
+}
+
+function hasUnrealSourcePluginLayout(entries: ZipEntryInfo[]): boolean {
+  const files = entries
+    .filter((entry) => !entry.isDirectory)
+    .map((entry) => entry.normalizedName.toLowerCase());
+
+  return (
+    files.some((file) => file.endsWith(".uplugin")) &&
+    files.some((file) => /(^|\/)source\/.+\.build\.cs$/.test(file))
+  );
 }
 
 function isKnownMetadataEntry(normalizedName: string): boolean {

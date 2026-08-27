@@ -57,10 +57,10 @@
     "package:available-mods": "npm run package:manual-qa && npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
-    "package": "npm run build && npm run build:unreal-decoder && electron-builder --dir && npm run package:manual-smoke",
-    "dist": "npm run build && npm run build:unreal-decoder && electron-builder --publish never && npm run package:available-mods",
+    "package": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && electron-builder --dir",
+    "dist": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && electron-builder --publish never",
     "release": "node scripts/runReleaseFlow.mjs",
-    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && electron-builder --publish always --config.forceCodeSigning=true"
+    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && npm run package:available-mods && electron-builder --publish always --config.forceCodeSigning=true"
   },
   "cmm": {
     "status": "ux-release-hardening",
@@ -113,6 +113,20 @@
       {
         "from": ".codex/clawed-game-file-map/20260814-current",
         "to": "clawed-game-file-map/20260814-current"
+      },
+      {
+        "from": "release/official-launch-mods",
+        "to": "available-mods/official-launch-mods",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "release/prototype-mods",
+        "to": "available-mods/prototype-mods",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {

@@ -10,6 +10,7 @@ import {
   type RuntimeSnapshot,
   type ThemeMode
 } from "../../shared/contracts/app";
+import { PackagedRuntimeValidationAction } from "../components/PackagedRuntimeValidationAction";
 import { accentColorOptions } from "../lib/theme";
 import { useAppStore } from "../stores/appStore";
 
@@ -342,6 +343,12 @@ export function SettingsPage(): ReactElement {
             </button>
           </div>
         </div>
+        <PackagedRuntimeValidationAction
+          disabled={busy}
+          onBusyChange={setBusy}
+          onRuntimeChanged={setRuntime}
+          runtime={runtime}
+        />
 
         <dl className="mt-5 grid gap-3">
           <div className="grid gap-2 md:grid-cols-[190px_1fr]">

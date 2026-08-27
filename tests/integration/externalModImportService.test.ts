@@ -391,6 +391,35 @@ describe("external mod import service", () => {
     expect(result.problems[0].code).toBe("FOMOD_INSTALLER_UNSUPPORTED");
   });
 
+  it("recognizes Unreal source plugin ZIPs without generic payload errors", async () => {
+    const { root, service } = await makeImporter();
+    const zipPath = await createZip(path.join(root, "ClawedCoopReliability.zip"), {
+      "ClawedCoopReliability/ClawedCoopReliability.uplugin": "{}",
+      "ClawedCoopReliability/Source/ClawedCoopReliability/ClawedCoopReliability.Build.cs":
+        "using UnrealBuildTool;",
+      "ClawedCoopReliability/Source/ClawedCoopReliability/Private/Module.cpp":
+        "void StartupModule() {}"
+    });
+
+    const inspection = await service.inspectExternalModPackage({
+      packagePath: zipPath
+    });
+    const result = await service.importExternalModPackage({
+      packagePath: zipPath
+    });
+
+    expect(inspection).toMatchObject({
+      status: "recognized",
+      format: "unrealSourcePlugin",
+      support: "inspectOnly",
+      loader: null
+    });
+    expect(inspection.problems[0].code).toBe("UNREAL_SOURCE_PLUGIN_UNSUPPORTED");
+    expect(inspection.problems[0].message).toContain("Co-op Capacity 8");
+    expect(result.status).toBe("failed");
+    expect(result.problems[0].code).toBe("UNREAL_SOURCE_PLUGIN_UNSUPPORTED");
+  });
+
   it("blocks unsupported archive containers and executable installers", async () => {
     const { root, service } = await makeImporter();
     const rarPath = path.join(root, "community-mod.rar");
