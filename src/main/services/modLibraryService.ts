@@ -290,7 +290,7 @@ export class LocalModLibraryService implements ModLibraryServiceContract {
       const metadata = this.createMetadata({
         manifest: parsedPackage.manifest,
         sha256: parsedPackage.sha256,
-        targetPath: stagingPath
+        targetPath
       });
       await writeFile(
         path.join(stagingPath, "metadata.json"),

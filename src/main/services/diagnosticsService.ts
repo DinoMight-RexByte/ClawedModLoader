@@ -37,6 +37,7 @@ import {
   NullLifecycleLogger,
   type LifecycleLogger
 } from "./lifecycleLogger";
+import { extractUe4ssRuntimeConfigurations } from "./deploymentManifestCleanup";
 import { modProblem } from "./packageProblems";
 import { isPathInside } from "./packagePaths";
 import { getUe4ssLogPath } from "./runtimeValidationProbe";
@@ -45,6 +46,8 @@ import type { MainServiceDependencies } from "./serviceRegistry";
 export interface DiagnosticsServiceOptions {
   clawedLocalAppDataRoot?: string;
 }
+
+type LogBundleSourceDraft = Omit<LogBundleSource, "exists">;
 
 export class LocalDiagnosticsService implements DiagnosticsServiceContract {
   constructor(
@@ -93,7 +96,10 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
           ? process.lifecycleState
           : "UNKNOWN",
       launchMode: this.dependencies.launchService.getCurrentLaunchMode(),
-      enabledMods: modLibrary.totals.enabled,
+      enabledMods: Object.values(activeProfile.selectedMods).filter(
+        (selection) => selection.enabled
+      ).length,
+      installedMods: modLibrary.totals.installed,
       profileValidity: validation.validity,
       deploymentState: deployment.state,
       runtime: deployment.runtime,
@@ -471,7 +477,7 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
     activeManifest: DiagnosticsSummary["deployment"]["activeManifest"]
   ): Promise<LogBundleSource[]> {
     const savedRoot = clawedSavedRoot(this.options.clawedLocalAppDataRoot);
-    const sources: Array<Omit<LogBundleSource, "exists">> = [
+    const sources: LogBundleSourceDraft[] = [
       {
         label: "Generated diagnostic report",
         scope: "generated",
@@ -491,28 +497,36 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
         scope: "vanilla",
         sourcePath: path.join(savedRoot, "Config"),
         archivePath: "clawed/Saved/Config",
-        included: true
+        included: true,
+        missingAction:
+          "Launch Clawed once, open or confirm settings, close the game, then refresh."
       },
       {
         label: "Clawed game logs",
         scope: "vanilla",
         sourcePath: path.join(savedRoot, "Logs"),
         archivePath: "clawed/Saved/Logs",
-        included: true
+        included: true,
+        missingAction:
+          "Launch Clawed once, let it reach the menu, close the game, then refresh."
       },
       {
         label: "Clawed crash reports",
         scope: "vanilla",
         sourcePath: path.join(savedRoot, "Crashes"),
         archivePath: "clawed/Saved/Crashes",
-        included: true
+        included: true,
+        missingAction:
+          "No action is needed unless you are reporting a crash; Clawed creates this after a game crash."
       },
       {
         label: "Clawed save games",
         scope: "vanilla",
         sourcePath: path.join(savedRoot, "SaveGames"),
         archivePath: "clawed/Saved/SaveGames",
-        included: true
+        included: true,
+        missingAction:
+          "Create or load a save in Clawed, wait for it to save, close the game, then refresh."
       },
       {
         label: "Steam app manifest",
@@ -537,14 +551,17 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
           scope: "modded",
           sourcePath: layout.directories.logs,
           archivePath: "cmm/logs",
-          included: true
+          included: true,
+          missingAction: "Run any CMM action, then refresh."
         },
         {
           label: "CMM deployment manifests",
           scope: "modded",
           sourcePath: path.join(layout.directories.runtime, "deployments"),
           archivePath: "cmm/runtime/deployments",
-          included: true
+          included: true,
+          missingAction:
+            "Use Launch Modded while Clawed is closed so CMM stages the active profile, then refresh."
         },
         {
           label: "CMM UE4SS runtime index",
@@ -555,21 +572,27 @@ export class LocalDiagnosticsService implements DiagnosticsServiceContract {
             "ue4ss-runtime.json"
           ),
           archivePath: "cmm/runtime/ue4ss-runtime.json",
-          included: true
+          included: true,
+          missingAction:
+            "Use Packaged Runtime or import a UE4SS runtime, then refresh."
         },
         {
           label: "CMM profiles",
           scope: "modded",
           sourcePath: layout.directories.profiles,
           archivePath: "cmm/profiles",
-          included: true
+          included: true,
+          missingAction:
+            "Create or switch a profile in CMM, then refresh."
         },
         {
           label: "Clawed save backups",
           scope: "modded",
           sourcePath: path.join(savedRoot, "SaveBackups"),
           archivePath: "clawed/Saved/SaveBackups",
-          included: true
+          included: true,
+          missingAction:
+            "Enable Save Backup Rotator, launch modded, let it create a backup, then refresh."
         },
         ...moddedRuntimeSources(discovery, activeManifest)
       );
@@ -718,22 +741,25 @@ function dedupeSources(
 function moddedRuntimeSources(
   discovery: DiagnosticsSummary["discovery"],
   activeManifest: DiagnosticsSummary["deployment"]["activeManifest"]
-): Array<Omit<LogBundleSource, "exists">> {
+): LogBundleSourceDraft[] {
   const gameInstallPath = discovery.gameInstallPath;
   const gameExecutable = discovery.gameExecutable;
   const candidates = new Set<string>();
 
   if (gameInstallPath && activeManifest) {
-    candidates.add(getUe4ssLogPath(gameInstallPath, activeManifest.runtimeConfiguration));
+    for (const configuration of extractUe4ssRuntimeConfigurations(
+      activeManifest.runtimeConfiguration
+    )) {
+      candidates.add(getUe4ssLogPath(gameInstallPath, configuration));
+      addRuntimeConfigCandidates(candidates, gameInstallPath, configuration);
+    }
     for (const file of activeManifest.runtimeGeneratedFiles) {
       if (path.basename(file.absolutePath).toLowerCase() === "ue4ss.log") {
         candidates.add(file.absolutePath);
       }
     }
-    addRuntimeConfigCandidates(
-      candidates,
-      gameInstallPath,
-      activeManifest.runtimeConfiguration
+    return [...candidates].map((sourcePath) =>
+      createModdedRuntimeSource(gameInstallPath, sourcePath)
     );
   }
 
@@ -753,13 +779,23 @@ function moddedRuntimeSources(
     );
   }
 
-  return [...candidates].map((sourcePath) => ({
+  return [...candidates].map((sourcePath) =>
+    createModdedRuntimeSource(gameInstallPath, sourcePath)
+  );
+}
+
+function createModdedRuntimeSource(
+  gameInstallPath: string | null,
+  sourcePath: string
+): LogBundleSourceDraft {
+  return {
     label: runtimeSourceLabel(sourcePath),
-    scope: "modded" as const,
+    scope: "modded",
     sourcePath,
     archivePath: archivePathForGameSource(gameInstallPath, sourcePath),
-    included: true
-  }));
+    included: true,
+    missingAction: missingActionForRuntimeSource(sourcePath)
+  };
 }
 
 function addRuntimeConfigCandidates(
@@ -792,6 +828,14 @@ function runtimeSourceLabel(sourcePath: string): string {
     return "CMM deployed runtime profile";
   }
   return "Modded runtime file";
+}
+
+function missingActionForRuntimeSource(sourcePath: string): string {
+  const fileName = path.basename(sourcePath).toLowerCase();
+  if (fileName === "ue4ss.log") {
+    return "Use Launch Modded, let Clawed reach the menu so UE4SS starts, close the game normally, then refresh.";
+  }
+  return "Use Launch Modded while Clawed is closed so CMM stages the active profile, then refresh.";
 }
 
 function archivePathForGameSource(

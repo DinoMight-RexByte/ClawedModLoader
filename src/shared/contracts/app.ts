@@ -2638,6 +2638,7 @@ export const PlaySnapshotSchema = z.object({
   gameState: GameStateSchema,
   launchMode: LaunchModeSchema,
   enabledMods: z.number().int().nonnegative(),
+  installedMods: z.number().int().nonnegative(),
   profileValidity: ProfileValiditySchema,
   deploymentState: DeploymentStateSchema,
   runtime: RuntimeSnapshotSchema,
@@ -2744,7 +2745,8 @@ export const LogBundleSourceSchema = z.object({
   sourcePath: z.string(),
   archivePath: z.string(),
   exists: z.boolean(),
-  included: z.boolean()
+  included: z.boolean(),
+  missingAction: z.string().min(1).nullable().optional()
 });
 export type LogBundleSource = z.infer<typeof LogBundleSourceSchema>;
 

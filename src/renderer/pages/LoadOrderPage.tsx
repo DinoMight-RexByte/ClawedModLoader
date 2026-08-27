@@ -8,7 +8,8 @@ import {
   GripVertical,
   Search
 } from "lucide-react";
-import type { KeyboardEvent, ReactElement } from "react";
+import type { DragEvent, KeyboardEvent, ReactElement } from "react";
+import { Fragment } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
@@ -20,6 +21,8 @@ import { ProblemDetails } from "../components/ProblemDetails";
 import { useAppStore } from "../stores/appStore";
 
 type EntryFilter = "all" | "enabled" | "disabled";
+type DropPlacement = "before" | "after";
+type DropTarget = { modId: string; placement: DropPlacement };
 
 export function LoadOrderPage(): ReactElement {
   const profileRevision = useAppStore((state) => state.profileRevision);
@@ -29,6 +32,7 @@ export function LoadOrderPage(): ReactElement {
   const [filter, setFilter] = useState<EntryFilter>("all");
   const [busy, setBusy] = useState(false);
   const [draggedModId, setDraggedModId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -151,6 +155,78 @@ export function LoadOrderPage(): ReactElement {
     }
   };
 
+  const clearDragState = (): void => {
+    setDraggedModId(null);
+    setDropTarget(null);
+  };
+
+  const getEntryDropPlacement = (
+    event: DragEvent<HTMLElement>
+  ): DropPlacement => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+  };
+
+  const activateDropTarget = (
+    entry: LoadOrderEntry,
+    placement: DropPlacement
+  ): void => {
+    if (draggedModId && draggedModId !== entry.mod.id) {
+      setDropTarget({ modId: entry.mod.id, placement });
+    }
+  };
+
+  const placeDraggedMod = (
+    event: DragEvent<HTMLElement>,
+    entry: LoadOrderEntry,
+    placement: DropPlacement
+  ): void => {
+    event.preventDefault();
+    const sourceModId = event.dataTransfer.getData("text/plain") || draggedModId;
+    clearDragState();
+
+    if (!sourceModId || sourceModId === entry.mod.id) {
+      return;
+    }
+
+    void runOrderAction(() =>
+      window.cmm.placeModInActiveOrder({
+        modId: sourceModId,
+        targetModId: entry.mod.id,
+        placement
+      })
+    );
+  };
+
+  const renderDropZone = (
+    entry: LoadOrderEntry,
+    placement: DropPlacement
+  ): ReactElement => {
+    const active =
+      dropTarget?.modId === entry.mod.id && dropTarget.placement === placement;
+
+    return (
+      <div
+        aria-hidden="true"
+        className="flex h-3 items-center px-4"
+        data-drop-mod-id={entry.mod.id}
+        data-drop-placement={placement}
+        data-testid={`load-order-drop-${entry.mod.id}-${placement}`}
+        onDragOver={(event) => {
+          event.preventDefault();
+          activateDropTarget(entry, placement);
+        }}
+        onDrop={(event) => placeDraggedMod(event, entry, placement)}
+      >
+        <div
+          className={`h-0.5 w-full rounded-full ${
+            active ? "bg-app-accent" : "bg-transparent"
+          }`}
+        />
+      </div>
+    );
+  };
+
   const activeProfileName = snapshot?.activeProfile.name ?? "Loading";
 
   return (
@@ -249,55 +325,57 @@ export function LoadOrderPage(): ReactElement {
       ) : null}
 
       {filteredEntries.length ? (
-        <section className="grid gap-3">
-          {filteredEntries.map((entry) => (
-            <article
-              aria-label={`${entry.mod.name} load order position ${entry.position}`}
-              aria-roledescription="Draggable load-order item"
-              className={`rounded-lg border p-4 outline-none ${
-                draggedModId === entry.mod.id
-                  ? "border-app-accent bg-app-accent/10"
-                  : "border-app-border bg-app-surface"
-              }`}
-              draggable={!busy}
-              key={`${entry.mod.id}-${entry.mod.version}`}
-              onDragEnd={() => setDraggedModId(null)}
-              onDragOver={(event) => event.preventDefault()}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("text/plain", entry.mod.id);
-                setDraggedModId(entry.mod.id);
-              }}
-              onDrop={(event) => {
-                event.preventDefault();
-                const sourceModId =
-                  event.dataTransfer.getData("text/plain") || draggedModId;
-                setDraggedModId(null);
-
-                if (!sourceModId || sourceModId === entry.mod.id) {
-                  return;
-                }
-
-                void runOrderAction(() =>
-                  window.cmm.placeModInActiveOrder({
-                    modId: sourceModId,
-                    targetModId: entry.mod.id,
-                    placement: "before"
-                  })
-                );
-              }}
-              onKeyDown={(event) => handleRowKeyDown(event, entry)}
-              tabIndex={0}
-            >
-              <div className="grid gap-4 lg:grid-cols-[48px_1fr_auto]">
-                <div
-                  className="flex cursor-grab items-center gap-2 text-app-muted active:cursor-grabbing"
-                  title="Drag to reorder"
-                >
-                  <GripVertical aria-label="Drag handle" size={18} />
-                  <span className="w-8 text-right text-sm tabular-nums">
-                    {entry.position}
-                  </span>
-                </div>
+        <section className="grid">
+          {filteredEntries.map((entry, index) => (
+            <Fragment key={`${entry.mod.id}-${entry.mod.version}`}>
+              {index === 0 ? renderDropZone(entry, "before") : null}
+              <article
+                aria-label={`${entry.mod.name} load order position ${entry.position}`}
+                aria-roledescription="Draggable load-order item"
+                className={`relative rounded-lg border p-4 outline-none ${
+                  draggedModId === entry.mod.id
+                    ? "border-app-accent bg-app-accent/10"
+                    : "border-app-border bg-app-surface"
+                }`}
+                data-mod-id={entry.mod.id}
+                data-testid={`load-order-item-${entry.mod.id}`}
+                draggable={!busy}
+                onDragEnd={clearDragState}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  activateDropTarget(entry, getEntryDropPlacement(event));
+                }}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData("text/plain", entry.mod.id);
+                  setDraggedModId(entry.mod.id);
+                }}
+                onDrop={(event) => {
+                  const placement =
+                    dropTarget?.modId === entry.mod.id
+                      ? dropTarget.placement
+                      : getEntryDropPlacement(event);
+                  placeDraggedMod(event, entry, placement);
+                }}
+                onKeyDown={(event) => handleRowKeyDown(event, entry)}
+                tabIndex={0}
+              >
+                {dropTarget?.modId === entry.mod.id ? (
+                  <div
+                    className={`pointer-events-none absolute left-4 right-4 h-0.5 rounded-full bg-app-accent ${
+                      dropTarget.placement === "before" ? "top-0" : "bottom-0"
+                    }`}
+                  />
+                ) : null}
+                <div className="grid gap-4 lg:grid-cols-[48px_1fr_auto]">
+                  <div
+                    className="flex cursor-grab items-center gap-2 text-app-muted active:cursor-grabbing"
+                    title="Drag to reorder"
+                  >
+                    <GripVertical aria-label="Drag handle" size={18} />
+                    <span className="w-8 text-right text-sm tabular-nums">
+                      {entry.position}
+                    </span>
+                  </div>
 
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
@@ -413,6 +491,8 @@ export function LoadOrderPage(): ReactElement {
                 </div>
               </div>
             </article>
+              {renderDropZone(entry, "after")}
+            </Fragment>
           ))}
         </section>
       ) : null}

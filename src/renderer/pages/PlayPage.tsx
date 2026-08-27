@@ -257,13 +257,19 @@ export function PlayPage(): ReactElement {
   const displayedDeploymentState = snapshot
     ? runtimeFirstDeploymentState(snapshot)
     : undefined;
+  const hasInstalledModsWithoutEnabledProfile =
+    snapshot !== null && snapshot.installedMods > 0 && snapshot.enabledMods === 0;
   const deploymentValue = runtimeValidationRunning
     ? "Validation Running"
+    : hasInstalledModsWithoutEnabledProfile
+      ? "No Enabled Mods"
     : displayedDeploymentState
       ? formatDeployment(displayedDeploymentState)
       : "Loading";
   const deploymentDetail = runtimeValidationRunning
     ? "Packaged runtime validation launch in progress"
+    : hasInstalledModsWithoutEnabledProfile
+      ? "Enable installed packages in the active profile"
     : displayedDeploymentState === "runtimeUnvalidated"
       ? "Validate runtime before deployment"
       : displayedDeploymentState === "runtimeIncompatible"
@@ -271,7 +277,9 @@ export function PlayPage(): ReactElement {
     : `Current launch mode: ${snapshot?.launchMode ?? "VANILLA"}`;
   const deploymentStatusTone = runtimeValidationRunning
     ? "warning"
-    : deploymentTone(displayedDeploymentState);
+    : hasInstalledModsWithoutEnabledProfile
+      ? "warning"
+      : deploymentTone(displayedDeploymentState);
   const canValidateRuntime =
     snapshot?.runtime.ue4ss?.source === "bundled" &&
     (snapshot.runtime.status === "unvalidated" ||
@@ -481,7 +489,7 @@ export function PlayPage(): ReactElement {
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <StatusCard
-          detail={`Preferred launch: ${snapshot?.launchMode ?? "VANILLA"}`}
+          detail={`${snapshot?.enabledMods ?? 0} of ${snapshot?.installedMods ?? 0} installed enabled`}
           label="Active Profile"
           value={snapshot?.activeProfile.name ?? "Loading"}
         />
@@ -497,7 +505,7 @@ export function PlayPage(): ReactElement {
           value={snapshot ? formatGameState(snapshot.gameState) : "Loading"}
         />
         <StatusCard
-          detail="Enabled in active profile"
+          detail={`${snapshot?.installedMods ?? 0} installed in library`}
           label="Enabled Mods"
           value={`${snapshot?.enabledMods ?? 0}`}
         />

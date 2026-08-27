@@ -39,10 +39,12 @@ import {
 } from "../../src/shared/contracts/app";
 import type {
   GameLocatorContract,
+  DeploymentServiceContract,
   LaunchServiceContract,
   ProcessSupervisorContract,
   StorageServiceContract
 } from "../../src/shared/contracts/services";
+import { createClawedModFixture } from "../helpers/clawedModFixture";
 
 class FakeStorageService implements StorageServiceContract {
   constructor(private readonly layout: AppStorageLayout) {}
@@ -144,7 +146,109 @@ afterEach(async () => {
   }
 });
 
+async function createNestedRuntimeZip(outputPath: string): Promise<void> {
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  const zip = new JSZip();
+  zip.file("dwmapi.dll", "fake proxy dll");
+  zip.file("ue4ss/UE4SS.dll", "fake nested ue4ss dll");
+  zip.file("ue4ss/UE4SS-settings.ini", "[UE4SS]\n");
+  zip.file("ue4ss/Mods/mods.txt", "BPModLoaderMod : 1\n");
+  await writeFile(outputPath, await zip.generateAsync({ type: "nodebuffer" }));
+}
+
 describe("diagnostics service", () => {
+  it("counts Play enabled mods from the active profile", async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-play-snapshot-"));
+    const storageService = new FakeStorageService(createStorageLayout(tempRoot));
+    const packageService = new ClawedModPackageService();
+    const modLibraryService = new LocalModLibraryService(
+      storageService,
+      packageService
+    );
+    const profileService = new LocalProfileService(
+      storageService,
+      modLibraryService
+    );
+    const loadOrderService = new LocalLoadOrderService(profileService);
+    const fixture = await createClawedModFixture(
+      path.join(tempRoot, "fixtures", "enabled.clawedmod"),
+      {
+        manifest: {
+          id: "enabled-mod",
+          name: "Enabled Mod",
+          version: "1.0.0"
+        }
+      }
+    );
+    await modLibraryService.importModPackage({ packagePath: fixture.packagePath });
+    await profileService.setModEnabled({
+      id: "enabled-mod",
+      version: "1.0.0",
+      enabled: true
+    });
+
+    const rawLibrary = await modLibraryService.listInstalledMods();
+    const discovery: GameDiscovery = {
+      appId: CLAWED_STEAM_APP_ID,
+      steamPath: null,
+      steamLibrary: null,
+      steamLibraries: [],
+      appManifestPath: null,
+      gameInstallPath: null,
+      gameExecutable: null,
+      discoveryStatus: "STEAM_NOT_FOUND",
+      source: "none",
+      manualOverride: null,
+      diagnosticErrors: [],
+      discoveredAt: new Date().toISOString()
+    };
+    const deploymentService: DeploymentServiceContract = {
+      getStatus: () => ({
+        id: "deploymentService",
+        label: "Deployment Service",
+        status: "ready",
+        detail: "fake"
+      }),
+      getSnapshot: async () => ({
+        state: "notDeployed",
+        activeManifest: null,
+        runtime: { ue4ss: null, status: "missing", problems: [] },
+        problems: []
+      }),
+      prepareModdedDeployment: async () => {
+        throw new Error("not used");
+      },
+      prepareRuntimeValidationDeployment: async () => {
+        throw new Error("not used");
+      },
+      prepareUnrealMappingsDumpDeployment: async () => {
+        throw new Error("not used");
+      },
+      prepareVanillaDeployment: async () => {
+        throw new Error("not used");
+      }
+    };
+    const diagnostics = new LocalDiagnosticsService(
+      {
+        gameLocator: new FakeGameLocator(discovery),
+        processSupervisor: new FakeProcessSupervisor(),
+        launchService: new FakeLaunchService(),
+        deploymentService,
+        profileService,
+        loadOrderService,
+        modLibraryService
+      } as unknown as MainServiceDependencies,
+      storageService,
+      []
+    );
+
+    const snapshot = await diagnostics.getPlaySnapshot();
+
+    expect(rawLibrary.totals.enabled).toBe(0);
+    expect(snapshot.enabledMods).toBe(1);
+    expect(snapshot.installedMods).toBe(1);
+  });
+
   it("sanitizes personal paths in diagnostic reports", async () => {
     tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-diagnostics-"));
     const storageService = new FakeStorageService(createStorageLayout(tempRoot));
@@ -382,9 +486,6 @@ describe("diagnostics service", () => {
     await mkdir(path.join(savedRoot, "SaveGames", "savegame_1"), {
       recursive: true
     });
-    await mkdir(path.join(path.dirname(gameExecutable), "ue4ss"), {
-      recursive: true
-    });
     await writeFile(gameExecutable, "fake executable");
     await writeFile(
       appManifestPath,
@@ -403,10 +504,6 @@ describe("diagnostics service", () => {
         "Default__BP_CustomSaveGameObject_C.sav"
       ),
       "save bytes"
-    );
-    await writeFile(
-      path.join(path.dirname(gameExecutable), "ue4ss", "UE4SS.log"),
-      "ue4ss log"
     );
     await logger.log({
       category: "APP",
@@ -427,6 +524,33 @@ describe("diagnostics service", () => {
       diagnosticErrors: [],
       discoveredAt: new Date().toISOString()
     };
+    const runtimeZip = path.join(tempRoot, "fixtures", "UE4SS-nested.zip");
+    await createNestedRuntimeZip(runtimeZip);
+    const runtimeImport = await runtimeManager.importUe4ssRuntime({
+      sourcePath: runtimeZip
+    });
+    expect(runtimeImport.status).toBe("imported");
+    const fixture = await createClawedModFixture(
+      path.join(tempRoot, "fixtures", "core.clawedmod"),
+      {
+        manifest: {
+          id: "core",
+          name: "Core",
+          version: "1.0.0"
+        }
+      }
+    );
+    const imported = await modLibraryService.importModPackage({
+      packagePath: fixture.packagePath
+    });
+    expect(imported.status).toBe("installed");
+    await profileService.setModEnabled({
+      id: fixture.manifest.id,
+      version: fixture.manifest.version,
+      enabled: true
+    });
+    const deployment = await deploymentService.prepareModdedDeployment(discovery);
+    expect(deployment.status).toBe("ok");
     const dependencies = {
       gameLocator: new FakeGameLocator(discovery),
       processSupervisor: new FakeProcessSupervisor(),
@@ -521,6 +645,42 @@ describe("diagnostics service", () => {
       gameAdapter,
       logger,
       { clawedLocalAppDataRoot: localAppDataRoot }
+    );
+
+    const missingLogPlan = await diagnostics.getLogBundlePlan({
+      mode: "modded",
+      includeHardware: false
+    });
+    const missingRuntimeLog = missingLogPlan.sources.find(
+      (source) => source.label === "UE4SS runtime log"
+    );
+    expect(missingRuntimeLog).toMatchObject({
+      exists: false,
+      missingAction:
+        "Use Launch Modded, let Clawed reach the menu so UE4SS starts, close the game normally, then refresh."
+    });
+    expect(
+      missingLogPlan.sources.some(
+        (source) =>
+          source.archivePath ===
+          "modded-runtime/Clawed/Binaries/Win64/Mods/mods.txt"
+      )
+    ).toBe(false);
+    expect(
+      missingLogPlan.sources.find(
+        (source) =>
+          source.archivePath ===
+          "modded-runtime/Clawed/Binaries/Win64/ue4ss/Mods/mods.txt"
+      )
+    ).toMatchObject({
+      exists: true,
+      missingAction:
+        "Use Launch Modded while Clawed is closed so CMM stages the active profile, then refresh."
+    });
+
+    await writeFile(
+      path.join(path.dirname(gameExecutable), "ue4ss", "UE4SS.log"),
+      "ue4ss log"
     );
 
     const plan = await diagnostics.getLogBundlePlan({

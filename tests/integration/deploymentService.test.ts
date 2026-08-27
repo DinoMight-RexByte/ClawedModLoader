@@ -367,6 +367,35 @@ async function exists(targetPath: string): Promise<boolean> {
 }
 
 describe("deployment and runtime management", () => {
+  it("blocks modded launch preparation when installed mods are not enabled", async () => {
+    const { root, deploymentService, modLibraryService } = await makeServices();
+    const discovery = await createFakeGame(root);
+    const fixture = await createClawedModFixture(
+      path.join(root, "fixtures", "core.clawedmod"),
+      {
+        manifest: {
+          id: "core",
+          name: "Core",
+          version: "1.0.0"
+        }
+      }
+    );
+    const imported = await modLibraryService.importModPackage({
+      packagePath: fixture.packagePath
+    });
+
+    expect(imported.status).toBe("installed");
+
+    const result = await deploymentService.prepareModdedDeployment(discovery);
+
+    expect(result.status).toBe("blocked");
+    expect(result.state).toBe("vanillaReady");
+    expect(result.problems[0]).toMatchObject({
+      code: "NO_ENABLED_MODS",
+      message: "No mods are enabled in the active profile."
+    });
+  });
+
   it("applies a traceable deployment transaction with deterministic load order", async () => {
     const {
       root,

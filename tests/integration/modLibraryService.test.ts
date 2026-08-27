@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -100,6 +100,12 @@ describe("local mod library service", () => {
     expect(snapshot.mods[0].packageIdentityId).toBe("cmm:test:core-framework");
     expect(snapshot.mods[0].enabled).toBe(false);
     expect(snapshot.mods[0].hasReadme).toBe(true);
+    const metadata = await readFile(
+      path.join(snapshot.mods[0].installPath, "metadata.json"),
+      "utf8"
+    );
+    const metadataInstallPath = snapshot.mods[0].installPath.replaceAll("\\", "\\\\");
+    expect(metadata).toContain(`"installPath": "${metadataInstallPath}"`);
 
     await expect(
       service.inspectManifest({ id: "core-framework", version: "1.0.0" })

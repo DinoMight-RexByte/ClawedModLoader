@@ -124,7 +124,7 @@ export function AppShell({
   );
 
   return (
-    <div className="flex h-screen min-h-[640px] flex-col overflow-hidden bg-app-bg text-app-text lg:flex-row">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-app-bg text-app-text lg:flex-row">
       <aside className="flex shrink-0 flex-col border-b border-app-border bg-app-surface px-4 py-3 lg:w-60 lg:border-b-0 lg:border-r lg:py-5">
         <div className="mb-3 lg:mb-7">
           <div className="flex items-center gap-3">

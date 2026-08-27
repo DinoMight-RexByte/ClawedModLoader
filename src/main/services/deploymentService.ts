@@ -192,7 +192,7 @@ export class LocalDeploymentService implements DeploymentServiceContract {
       });
     }
 
-    if (Object.values(activeProfile.selectedMods).every((mod) => !mod.enabled)) {
+    if (!hasEnabledProfileSelections(activeProfile)) {
       return DeploymentSnapshotSchema.parse({
         state: "vanillaReady",
         activeManifest: null,
@@ -254,6 +254,17 @@ export class LocalDeploymentService implements DeploymentServiceContract {
 
     if (loadOrder.validity === "invalid") {
       return blockedResult("deploymentError", loadOrderProblems);
+    }
+
+    if (!hasEnabledProfileSelections(profile)) {
+      return blockedResult("vanillaReady", [
+        modProblem(
+          "warning",
+          "NO_ENABLED_MODS",
+          "No mods are enabled in the active profile.",
+          "Enable at least one installed package before using Launch Modded."
+        )
+      ]);
     }
 
     const plan = this.createAdapterPlan(profile, installedMods);
@@ -1372,6 +1383,12 @@ function getEnabledInstalledRecords(
       selection.version === record.manifest.version
     );
   });
+}
+
+function hasEnabledProfileSelections(
+  profile: { selectedMods: Record<string, { enabled: boolean }> }
+): boolean {
+  return Object.values(profile.selectedMods).some((selection) => selection.enabled);
 }
 
 async function createRuntimeValidationRecord(
