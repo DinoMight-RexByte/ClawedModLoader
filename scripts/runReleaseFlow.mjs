@@ -10,6 +10,7 @@ const usage = [
   "       npm run release -- --version <x.y.z>",
   "       npm run release -- <x.y.z>"
 ].join("\n");
+const releaseVersionFiles = new Set(["package-lock.json", "package.json"]);
 
 function fail(message) {
   process.stderr.write(`${message}\n`);
@@ -35,6 +36,35 @@ function read(command, args) {
     fail(result.stderr.trim() || `${command} ${args.join(" ")} failed.`);
   }
   return result.stdout.trim();
+}
+
+function readHeadJson(filePath) {
+  return JSON.parse(read("git", ["show", `HEAD:${filePath}`]));
+}
+
+function changedPaths(status) {
+  return status
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => line.slice(3).trim().replaceAll("\\", "/"));
+}
+
+function withVersion(value, version) {
+  return { ...value, version };
+}
+
+function withLockVersion(value, version) {
+  return {
+    ...value,
+    version,
+    packages: {
+      ...value.packages,
+      "": {
+        ...value.packages[""],
+        version
+      }
+    }
+  };
 }
 
 export function createNpmInvocation(args, options = {}) {
@@ -93,6 +123,25 @@ function compareVersions(left, right) {
   return 0;
 }
 
+export function isVersionOnlyReleaseBump(
+  version,
+  workingPackageJson,
+  workingPackageLock,
+  headPackageJson,
+  headPackageLock
+) {
+  return (
+    workingPackageJson.version === version &&
+    workingPackageLock.version === version &&
+    workingPackageLock.packages?.[""]?.version === version &&
+    compareVersions(version, headPackageJson.version) > 0 &&
+    JSON.stringify(withVersion(workingPackageJson, headPackageJson.version)) ===
+      JSON.stringify(headPackageJson) &&
+    JSON.stringify(withLockVersion(workingPackageLock, headPackageLock.version)) ===
+      JSON.stringify(headPackageLock)
+  );
+}
+
 function parseVersion(args) {
   let version = null;
 
@@ -146,8 +195,25 @@ export function runReleaseFlow(args) {
   run("git", ["fetch", "origin", "main", "--tags"]);
 
   const status = read("git", ["status", "--porcelain"]);
-  if (status) {
-    fail("Release flow requires a clean worktree. Commit or stash changes first.");
+  const currentPackageJson = JSON.parse(readFileSync("package.json", "utf8"));
+  const currentPackageLock = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  const headPackageJson = status ? readHeadJson("package.json") : currentPackageJson;
+  const headPackageLock = status ? readHeadJson("package-lock.json") : currentPackageLock;
+  const resumableVersionBump =
+    status &&
+    changedPaths(status).every((filePath) => releaseVersionFiles.has(filePath)) &&
+    isVersionOnlyReleaseBump(
+      version,
+      currentPackageJson,
+      currentPackageLock,
+      headPackageJson,
+      headPackageLock
+    );
+
+  if (status && !resumableVersionBump) {
+    fail(
+      "Release flow requires a clean worktree or an interrupted package version bump for the requested release."
+    );
   }
 
   const ancestry = spawnSync("git", [
@@ -160,9 +226,9 @@ export function runReleaseFlow(args) {
     fail("Local main is behind origin/main. Pull or merge before releasing.");
   }
 
-  const currentVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
-  if (compareVersions(version, currentVersion) <= 0) {
-    fail(`Release version ${version} must be newer than ${currentVersion}.`);
+  const baselineVersion = resumableVersionBump ? headPackageJson.version : currentPackageJson.version;
+  if (compareVersions(version, baselineVersion) <= 0) {
+    fail(`Release version ${version} must be newer than ${baselineVersion}.`);
   }
 
   const tag = `v${version}`;
@@ -170,7 +236,11 @@ export function runReleaseFlow(args) {
     fail(`${tag} already exists.`);
   }
 
-  runNpm(["version", version, "--no-git-tag-version"]);
+  if (resumableVersionBump) {
+    process.stdout.write(`Resuming release ${tag} from existing package version bump.\n`);
+  } else {
+    runNpm(["version", version, "--no-git-tag-version"]);
+  }
   runNpm(["run", "verify"]);
   run("git", ["add", "package.json", "package-lock.json"]);
   run("git", ["commit", "-m", `Release ${version}`]);

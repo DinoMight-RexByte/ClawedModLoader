@@ -93,7 +93,7 @@ describe("release build config", () => {
   });
 
   it("publishes app updates only through the explicit GitHub release command", () => {
-    expect(packageJson.version).toBe("0.1.0");
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(packageJson.repository).toEqual({
       type: "git",
       url: "https://github.com/DinoMight-RexByte/ClawedModLoader.git"
@@ -171,6 +171,32 @@ describe("release build config", () => {
       [nodePath, [npmExecPath, "run", "verify"]],
       ["npm.cmd", ["run", "verify"]]
     ]);
+  });
+
+  it("can resume an interrupted package-only version bump", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        [
+          'import { isVersionOnlyReleaseBump } from "./scripts/runReleaseFlow.mjs";',
+          'const headPackage = { name: "clawed-mod-manager", version: "0.1.0", scripts: { release: "node scripts/runReleaseFlow.mjs" } };',
+          'const workingPackage = { ...headPackage, version: "0.2.0" };',
+          'const headLock = { name: "clawed-mod-manager", version: "0.1.0", packages: { "": { name: "clawed-mod-manager", version: "0.1.0" } } };',
+          'const workingLock = { ...headLock, version: "0.2.0", packages: { "": { ...headLock.packages[""], version: "0.2.0" } } };',
+          "process.stdout.write(JSON.stringify([",
+          'isVersionOnlyReleaseBump("0.2.0", workingPackage, workingLock, headPackage, headLock),',
+          'isVersionOnlyReleaseBump("0.2.0", { ...workingPackage, description: "changed" }, workingLock, headPackage, headLock)',
+          "]));"
+        ].join("\n")
+      ],
+      { encoding: "utf8" }
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual([true, false]);
   });
 
   it("passes Windows signing secrets into the GitHub release workflow", () => {
