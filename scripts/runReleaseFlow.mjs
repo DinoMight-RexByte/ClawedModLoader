@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const versionPattern = /^\d+\.\d+\.\d+$/;
 const usage = [
@@ -33,6 +35,24 @@ function read(command, args) {
     fail(result.stderr.trim() || `${command} ${args.join(" ")} failed.`);
   }
   return result.stdout.trim();
+}
+
+export function createNpmInvocation(args, options = {}) {
+  const env = options.env ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const nodePath = options.nodePath ?? process.execPath;
+  const npmExecPath = env.npm_execpath;
+
+  if (npmExecPath?.endsWith(".js")) {
+    return [nodePath, [npmExecPath, ...args]];
+  }
+
+  return [platform === "win32" ? "npm.cmd" : "npm", args];
+}
+
+function runNpm(args) {
+  const [command, npmArgs] = createNpmInvocation(args);
+  run(command, npmArgs);
 }
 
 function hasTag(tag) {
@@ -112,49 +132,55 @@ function parseVersion(args) {
   return version;
 }
 
-const version = parseVersion(process.argv.slice(2));
+export function runReleaseFlow(args) {
+  const version = parseVersion(args);
 
-if (!version || !versionPattern.test(version)) {
-  fail(usage);
+  if (!version || !versionPattern.test(version)) {
+    fail(usage);
+  }
+
+  if (read("git", ["branch", "--show-current"]) !== "main") {
+    fail("Release flow must run from main.");
+  }
+
+  run("git", ["fetch", "origin", "main", "--tags"]);
+
+  const status = read("git", ["status", "--porcelain"]);
+  if (status) {
+    fail("Release flow requires a clean worktree. Commit or stash changes first.");
+  }
+
+  const ancestry = spawnSync("git", [
+    "merge-base",
+    "--is-ancestor",
+    "origin/main",
+    "HEAD"
+  ]);
+  if (ancestry.status !== 0) {
+    fail("Local main is behind origin/main. Pull or merge before releasing.");
+  }
+
+  const currentVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
+  if (compareVersions(version, currentVersion) <= 0) {
+    fail(`Release version ${version} must be newer than ${currentVersion}.`);
+  }
+
+  const tag = `v${version}`;
+  if (hasTag(tag)) {
+    fail(`${tag} already exists.`);
+  }
+
+  runNpm(["version", version, "--no-git-tag-version"]);
+  runNpm(["run", "verify"]);
+  run("git", ["add", "package.json", "package-lock.json"]);
+  run("git", ["commit", "-m", `Release ${version}`]);
+  run("git", ["tag", tag]);
+  run("git", ["push", "origin", "main"]);
+  run("git", ["push", "origin", tag]);
+
+  process.stdout.write(`Release ${tag} pushed. GitHub Actions will publish the app artifacts.\n`);
 }
 
-if (read("git", ["branch", "--show-current"]) !== "main") {
-  fail("Release flow must run from main.");
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  runReleaseFlow(process.argv.slice(2));
 }
-
-run("git", ["fetch", "origin", "main", "--tags"]);
-
-const status = read("git", ["status", "--porcelain"]);
-if (status) {
-  fail("Release flow requires a clean worktree. Commit or stash changes first.");
-}
-
-const ancestry = spawnSync("git", [
-  "merge-base",
-  "--is-ancestor",
-  "origin/main",
-  "HEAD"
-]);
-if (ancestry.status !== 0) {
-  fail("Local main is behind origin/main. Pull or merge before releasing.");
-}
-
-const currentVersion = JSON.parse(readFileSync("package.json", "utf8")).version;
-if (compareVersions(version, currentVersion) <= 0) {
-  fail(`Release version ${version} must be newer than ${currentVersion}.`);
-}
-
-const tag = `v${version}`;
-if (hasTag(tag)) {
-  fail(`${tag} already exists.`);
-}
-
-run("npm", ["version", version, "--no-git-tag-version"]);
-run("npm", ["run", "verify"]);
-run("git", ["add", "package.json", "package-lock.json"]);
-run("git", ["commit", "-m", `Release ${version}`]);
-run("git", ["tag", tag]);
-run("git", ["push", "origin", "main"]);
-run("git", ["push", "origin", tag]);
-
-process.stdout.write(`Release ${tag} pushed. GitHub Actions will publish the app artifacts.\n`);

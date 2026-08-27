@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
@@ -141,6 +142,35 @@ describe("release build config", () => {
 
     expect(releaseScript).toContain("npm run release -- -v <x.y.z>");
     expect(releaseScript).toContain("--version <x.y.z>");
+  });
+
+  it("uses the active npm CLI when the local release command runs npm subcommands", () => {
+    const npmExecPath = "C:/Program Files/nodejs/node_modules/npm/bin/npm-cli.js";
+    const nodePath = "C:/Program Files/nodejs/node.exe";
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        [
+          'import { createNpmInvocation } from "./scripts/runReleaseFlow.mjs";',
+          `const npmExecPath = ${JSON.stringify(npmExecPath)};`,
+          `const nodePath = ${JSON.stringify(nodePath)};`,
+          "process.stdout.write(JSON.stringify([",
+          'createNpmInvocation(["run", "verify"], { env: { npm_execpath: npmExecPath }, nodePath, platform: "win32" }),',
+          'createNpmInvocation(["run", "verify"], { env: {}, nodePath, platform: "win32" })',
+          "]));"
+        ].join("\n")
+      ],
+      { encoding: "utf8" }
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(JSON.parse(result.stdout)).toEqual([
+      [nodePath, [npmExecPath, "run", "verify"]],
+      ["npm.cmd", ["run", "verify"]]
+    ]);
   });
 
   it("passes Windows signing secrets into the GitHub release workflow", () => {
