@@ -210,7 +210,9 @@ describe("IPC contracts", () => {
             sourcePath: "C:\\Users\\Tester\\AppData\\Local\\Clawed\\Saved\\SaveGames",
             archivePath: "clawed/Saved/SaveGames",
             exists: true,
-            included: true
+            included: true,
+            missingAction:
+              "Create or load a save in Clawed, wait for it to save, close the game, then refresh."
           }
         ]
       }).fileName
@@ -390,6 +392,7 @@ describe("IPC contracts", () => {
       gameState: "UNKNOWN",
       launchMode: "VANILLA",
       enabledMods: 0,
+      installedMods: 2,
       profileValidity: "valid",
       deploymentState: "notDeployed",
       runtime: {
@@ -423,5 +426,6 @@ describe("IPC contracts", () => {
     });
 
     expect(parsed.enabledMods).toBe(0);
+    expect(parsed.installedMods).toBe(2);
   });
 });

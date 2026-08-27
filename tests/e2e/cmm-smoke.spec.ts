@@ -7,15 +7,20 @@ const responsiveViewports = [
   { name: "large", width: 1440, height: 900 }
 ] as const;
 
-async function expectNoDocumentHorizontalOverflow(page: Page): Promise<void> {
+async function expectNoDocumentOverflow(page: Page): Promise<void> {
   const metrics = await page.evaluate(() => {
     const scrollWidth = Math.max(
       document.body.scrollWidth,
       document.documentElement.scrollWidth
     );
+    const scrollingElement =
+      document.scrollingElement ?? document.documentElement;
 
     return {
+      bodyOverflowY: window.getComputedStyle(document.body).overflowY,
+      rootOverflowY: window.getComputedStyle(document.documentElement).overflowY,
       scrollWidth,
+      scrollTop: scrollingElement.scrollTop,
       viewportWidth: window.innerWidth
     };
   });
@@ -24,6 +29,72 @@ async function expectNoDocumentHorizontalOverflow(page: Page): Promise<void> {
     metrics.scrollWidth,
     `document width ${metrics.scrollWidth}px exceeded viewport ${metrics.viewportWidth}px`
   ).toBeLessThanOrEqual(metrics.viewportWidth + 2);
+  expect(metrics.rootOverflowY).toBe("hidden");
+  expect(metrics.bodyOverflowY).toBe("hidden");
+  expect(metrics.scrollTop).toBe(0);
+}
+
+async function getLoadOrderIds(page: Page): Promise<string[]> {
+  return page.locator("[data-mod-id]").evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute("data-mod-id") ?? "")
+  );
+}
+
+async function dragLoadOrderMod(
+  page: Page,
+  modId: string,
+  targetModId: string,
+  placement: "before" | "after"
+): Promise<void> {
+  await page.evaluate(
+    ({ modId, placement, targetModId }) => {
+      const source = Array.from(document.querySelectorAll("[data-mod-id]")).find(
+        (node) => node.getAttribute("data-mod-id") === modId
+      );
+      const target = Array.from(
+        document.querySelectorAll("[data-drop-mod-id]")
+      ).find(
+        (node) =>
+          node.getAttribute("data-drop-mod-id") === targetModId &&
+          node.getAttribute("data-drop-placement") === placement
+      );
+
+      if (!source || !target) {
+        throw new Error("Load-order drag target was not found.");
+      }
+
+      const dataTransfer = new DataTransfer();
+      source.dispatchEvent(
+        new DragEvent("dragstart", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer
+        })
+      );
+      target.dispatchEvent(
+        new DragEvent("dragover", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer
+        })
+      );
+      target.dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer
+        })
+      );
+      source.dispatchEvent(
+        new DragEvent("dragend", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer
+        })
+      );
+    },
+    { modId, placement, targetModId }
+  );
 }
 
 async function expectModelViewportRendered(page: Page): Promise<void> {
@@ -1059,6 +1130,42 @@ test.beforeEach(async ({ page }) => {
         validity: "valid"
       }
     });
+    const placeOrderMod = (modId: string, index: number): void => {
+      const currentIndex = state.order.findIndex((mod) => mod.id === modId);
+
+      if (currentIndex === -1) {
+        return;
+      }
+
+      const [mod] = state.order.splice(currentIndex, 1);
+      state.order.splice(Math.max(0, Math.min(index, state.order.length)), 0, mod);
+    };
+    const placeOrderModRelative = (
+      modId: string,
+      targetModId: string,
+      placement: "before" | "after"
+    ): void => {
+      if (modId === targetModId) {
+        return;
+      }
+
+      const currentIndex = state.order.findIndex((mod) => mod.id === modId);
+      const targetIndex = state.order.findIndex((mod) => mod.id === targetModId);
+
+      if (currentIndex === -1 || targetIndex === -1) {
+        return;
+      }
+
+      const [mod] = state.order.splice(currentIndex, 1);
+      const adjustedTargetIndex = state.order.findIndex(
+        (target) => target.id === targetModId
+      );
+      state.order.splice(
+        placement === "before" ? adjustedTargetIndex : adjustedTargetIndex + 1,
+        0,
+        mod
+      );
+    };
     const creatorEntries = () => [
       creatorWinnerEntry,
       creatorPayloadEntry,
@@ -1617,6 +1724,7 @@ test.beforeEach(async ({ page }) => {
       gameState: "STOPPED",
       launchMode: "MODDED",
       enabledMods: state.mods.filter((mod) => mod.enabled).length,
+      installedMods: state.mods.length,
       profileValidity: "valid",
       deploymentState:
         (window as any).__cmmDeploymentStateOverride ?? "deploymentRequired",
@@ -1992,15 +2100,17 @@ test.beforeEach(async ({ page }) => {
         direction: string;
       }) => {
         const index = state.order.findIndex((mod) => mod.id === modId);
-        if (index >= 0 && direction === "down" && index < state.order.length - 1) {
-          const item = state.order[index];
-          state.order.splice(index, 1);
-          state.order.splice(index + 1, 0, item);
-        }
-        if (index > 0 && direction === "up") {
-          const item = state.order[index];
-          state.order.splice(index, 1);
-          state.order.splice(index - 1, 0, item);
+        if (index >= 0) {
+          placeOrderMod(
+            modId,
+            direction === "top"
+              ? 0
+              : direction === "bottom"
+                ? state.order.length
+                : direction === "up"
+                  ? index - 1
+                  : index + 1
+          );
         }
         return {
           status: "ok",
@@ -2008,16 +2118,36 @@ test.beforeEach(async ({ page }) => {
           problems: []
         };
       },
-      setModActiveOrderPosition: async () => ({
-        status: "ok",
-        snapshot: loadOrderSnapshot(),
-        problems: []
-      }),
-      placeModInActiveOrder: async () => ({
-        status: "ok",
-        snapshot: loadOrderSnapshot(),
-        problems: []
-      }),
+      setModActiveOrderPosition: async ({
+        modId,
+        position
+      }: {
+        modId: string;
+        position: number;
+      }) => {
+        placeOrderMod(modId, position - 1);
+        return {
+          status: "ok",
+          snapshot: loadOrderSnapshot(),
+          problems: []
+        };
+      },
+      placeModInActiveOrder: async ({
+        modId,
+        targetModId,
+        placement
+      }: {
+        modId: string;
+        targetModId: string;
+        placement: "before" | "after";
+      }) => {
+        placeOrderModRelative(modId, targetModId, placement);
+        return {
+          status: "ok",
+          snapshot: loadOrderSnapshot(),
+          problems: []
+        };
+      },
       exportCurrentProfileModpack: async () => ({
         status: "exported",
         modpackPath: "C:\\fixtures\\share.clawedpack",
@@ -2883,6 +3013,18 @@ test.beforeEach(async ({ page }) => {
             included: mode === "modded"
           },
           {
+            label: "UE4SS runtime log",
+            scope: "modded",
+            sourcePath:
+              "C:\\SteamLibrary\\steamapps\\common\\Clawed\\Clawed\\Binaries\\Win64\\ue4ss\\UE4SS.log",
+            archivePath:
+              "modded-runtime/Clawed/Binaries/Win64/ue4ss/UE4SS.log",
+            exists: false,
+            included: mode === "modded",
+            missingAction:
+              "Use Launch Modded, let Clawed reach the menu so UE4SS starts, close the game normally, then refresh."
+          },
+          {
             label: "Hardware specs",
             scope: "hardware",
             sourcePath: "Generated only when consent is enabled",
@@ -3185,6 +3327,41 @@ test("smoke-tests first run and primary desktop flows", async ({ page }) => {
   await expect(page.getByText("Diagnostic report copied.")).toBeVisible();
   await page.getByRole("button", { name: "Open Logs" }).click();
   await expect(page.getByText("Logs folder opened.")).toBeVisible();
+});
+
+test("places dragged load-order items between rows", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.getByRole("button", { exact: true, name: "Mods" }).click();
+  await page.getByRole("button", { name: "Import Mod" }).first().click();
+  await page.getByRole("button", { exact: true, name: "Load Order" }).click();
+  await expect(page.getByRole("heading", { name: "Logical Order" })).toBeVisible();
+  await expectNoDocumentOverflow(page);
+  await expect.poll(() => getLoadOrderIds(page)).toEqual([
+    "core-framework",
+    "female-a",
+    "character-framework"
+  ]);
+
+  await dragLoadOrderMod(
+    page,
+    "character-framework",
+    "core-framework",
+    "after"
+  );
+  await expect(page.getByText("Load order updated.")).toBeVisible();
+  await expect.poll(() => getLoadOrderIds(page)).toEqual([
+    "core-framework",
+    "character-framework",
+    "female-a"
+  ]);
+
+  await dragLoadOrderMod(page, "female-a", "core-framework", "before");
+  await expect.poll(() => getLoadOrderIds(page)).toEqual([
+    "female-a",
+    "core-framework",
+    "character-framework"
+  ]);
 });
 
 test("validates an unvalidated packaged runtime during first-run setup", async ({
@@ -3497,6 +3674,20 @@ test("runs packaged runtime validation from validation error", async ({
     .toBe(true);
 });
 
+test("shows missing modded log bundle next steps", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await page.getByRole("button", { exact: true, name: "Log Bundler" }).click();
+
+  await page.getByRole("button", { name: "Modded" }).click();
+
+  await expect(page.getByText("Some included sources are missing.")).toBeVisible();
+  await expect(page.getByText("Next step:")).toBeVisible();
+  await expect(
+    page.getByText(/Use Launch Modded, let Clawed reach the menu/)
+  ).toBeVisible();
+});
+
 test("renders creator viewport pop-out route with restored session", async ({
   page
 }) => {
@@ -3547,7 +3738,7 @@ for (const viewport of responsiveViewports) {
     await expect(
       page.getByRole("dialog", { name: "First-Run Setup" })
     ).toBeVisible();
-    await expectNoDocumentHorizontalOverflow(page);
+    await expectNoDocumentOverflow(page);
     await page.getByRole("button", { name: "Finish Later" }).click();
 
     const pages = [
@@ -3611,7 +3802,7 @@ for (const viewport of responsiveViewports) {
         await page.getByRole("button", { name: "Copy Validation" }).click();
         await expect(page.getByText("Report: ready")).toBeVisible();
       }
-      await expectNoDocumentHorizontalOverflow(page);
+      await expectNoDocumentOverflow(page);
     }
   });
 }

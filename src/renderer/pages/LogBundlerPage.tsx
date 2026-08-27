@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   CheckCircle2,
   FileArchive,
   RefreshCw,
@@ -47,6 +48,8 @@ export function LogBundlerPage(): ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const missingSources =
+    plan?.sources.filter((source) => source.included && !source.exists) ?? [];
 
   const loadPlan = useCallback(async (): Promise<void> => {
     setError(null);
@@ -207,33 +210,62 @@ export function LogBundlerPage(): ReactElement {
         </div>
 
         {plan ? (
-          <div className="mt-4 overflow-hidden rounded-md border border-app-border">
-            {plan.sources.map((source) => {
-              const status = sourceStatus(source);
-              return (
-                <div
-                  className="grid gap-2 border-b border-app-border px-3 py-3 text-sm last:border-b-0 md:grid-cols-[170px_110px_1fr]"
-                  key={`${source.scope}-${source.archivePath}-${source.sourcePath}`}
-                >
-                  <div className="font-medium">{source.label}</div>
-                  <div className={`flex items-center gap-2 ${status.className}`}>
-                    {source.included && source.exists ? (
-                      <CheckCircle2 aria-hidden="true" size={15} />
-                    ) : null}
-                    {status.label}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="break-all text-app-muted">
-                      {source.sourcePath}
+          <>
+            {missingSources.length > 0 ? (
+              <div
+                className="mt-4 flex items-start gap-3 rounded-md border border-app-warning/40 bg-app-warning/10 p-3 text-sm text-app-warning"
+                role="status"
+              >
+                <AlertTriangle
+                  aria-hidden="true"
+                  className="mt-0.5 shrink-0"
+                  size={17}
+                />
+                <p>
+                  Some included sources are missing. Use the next step shown on
+                  each missing row, then refresh.
+                </p>
+              </div>
+            ) : null}
+
+            <div className="mt-4 overflow-hidden rounded-md border border-app-border">
+              {plan.sources.map((source) => {
+                const status = sourceStatus(source);
+                return (
+                  <div
+                    className="grid gap-2 border-b border-app-border px-3 py-3 text-sm last:border-b-0 md:grid-cols-[170px_110px_1fr]"
+                    key={`${source.scope}-${source.archivePath}-${source.sourcePath}`}
+                  >
+                    <div className="font-medium">{source.label}</div>
+                    <div
+                      className={`flex items-center gap-2 ${status.className}`}
+                    >
+                      {source.included && source.exists ? (
+                        <CheckCircle2 aria-hidden="true" size={15} />
+                      ) : null}
+                      {status.label}
                     </div>
-                    <div className="mt-1 break-all text-xs text-app-subtle">
-                      ZIP: {source.archivePath}
+                    <div className="min-w-0">
+                      <div className="break-all text-app-muted">
+                        {source.sourcePath}
+                      </div>
+                      <div className="mt-1 break-all text-xs text-app-subtle">
+                        ZIP: {source.archivePath}
+                      </div>
+                      {source.included &&
+                      !source.exists &&
+                      source.missingAction ? (
+                        <div className="mt-2 rounded-md border border-app-warning/30 bg-app-warning/10 p-2 text-xs text-app-warning">
+                          <span className="font-semibold">Next step:</span>{" "}
+                          {source.missingAction}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          </>
         ) : (
           <div className="mt-4 rounded-md border border-app-border bg-app-bg p-3 text-sm text-app-muted">
             Loading bundle contents

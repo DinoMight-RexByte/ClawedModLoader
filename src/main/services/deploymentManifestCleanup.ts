@@ -169,7 +169,7 @@ export async function cleanupManifestGeneratedArtifacts(
   };
 }
 
-function extractUe4ssRuntimeConfigurations(
+export function extractUe4ssRuntimeConfigurations(
   configuration: Record<string, unknown>
 ): Array<Record<string, unknown>> {
   if (configuration.type === "ue4ss") {
