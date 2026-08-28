@@ -72,9 +72,12 @@ describe("release build config", () => {
     );
   });
 
-  it("includes all generated user-facing mods in the dist command", () => {
+  it("includes all app-bundled available mods in package commands", () => {
     expect(packageJson.scripts["package:available-mods"]).toBe(
-      "npm run package:manual-qa && npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
+      "npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
+    );
+    expect(packageJson.scripts["package:manual-qa"]).toBe(
+      "npm run package:manual-smoke && npm run package:manual-logo-test && node scripts/createManualQaReadme.mjs"
     );
     expect(packageJson.scripts.package).toContain("npm run package:available-mods");
     expect(packageJson.scripts.dist).toContain("npm run package:available-mods");
@@ -89,6 +92,9 @@ describe("release build config", () => {
     );
     expect(packageJson.scripts["package:available-mods"]).not.toContain(
       "package:optimization-dev-plugins"
+    );
+    expect(packageJson.scripts["package:available-mods"]).not.toContain(
+      "package:manual-qa"
     );
   });
 
@@ -123,6 +129,10 @@ describe("release build config", () => {
     );
     expect(packageJson.scripts["release:github"]).toContain(
       "npm run package:available-mods"
+    );
+    expect(packageJson.scripts["release:github"]).not.toContain("package:manual-qa");
+    expect(packageJson.scripts["release:github"]).not.toContain(
+      "package:manual-logo-test"
     );
     expect(
       packageJson.scripts["release:github"].indexOf(
