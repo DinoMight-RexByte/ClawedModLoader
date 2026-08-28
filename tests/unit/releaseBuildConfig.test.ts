@@ -62,6 +62,11 @@ describe("release build config", () => {
   });
 
   it("keeps the official launch mod bundle as an explicit packaging step", () => {
+    const officialLaunchScript = readFileSync(
+      "scripts/createOfficialLaunchBundle.mjs",
+      "utf8"
+    );
+
     expect(packageJson.scripts.package).toContain("npm run build:unreal-decoder");
     expect(packageJson.scripts.dist).toContain("npm run build:unreal-decoder");
     expect(packageJson.scripts["package:official-launch-mods"]).toBe(
@@ -70,11 +75,17 @@ describe("release build config", () => {
     expect(packageJson.scripts["package:official-launch"]).toBe(
       "npm run package && npm run package:official-launch-mods"
     );
+    expect(officialLaunchScript).toContain(
+      "CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE"
+    );
   });
 
   it("includes all app-bundled available mods in package commands", () => {
     expect(packageJson.scripts["package:available-mods"]).toBe(
       "npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
+    );
+    expect(packageJson.scripts["package:available-mods:github"]).toBe(
+      "cross-env CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE=1 npm run package:available-mods"
     );
     expect(packageJson.scripts["package:manual-qa"]).toBe(
       "npm run package:manual-smoke && npm run package:manual-logo-test && node scripts/createManualQaReadme.mjs"
@@ -128,7 +139,10 @@ describe("release build config", () => {
       "--config.forceCodeSigning=true"
     );
     expect(packageJson.scripts["release:github"]).toContain(
-      "npm run package:available-mods"
+      "npm run package:available-mods:github"
+    );
+    expect(packageJson.scripts["release:github"]).not.toContain(
+      "npm run package:available-mods &&"
     );
     expect(packageJson.scripts["release:github"]).not.toContain("package:manual-qa");
     expect(packageJson.scripts["release:github"]).not.toContain(
@@ -136,7 +150,7 @@ describe("release build config", () => {
     );
     expect(
       packageJson.scripts["release:github"].indexOf(
-        "npm run package:available-mods"
+        "npm run package:available-mods:github"
       )
     ).toBeLessThan(packageJson.scripts["release:github"].indexOf("electron-builder"));
     expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(false);
