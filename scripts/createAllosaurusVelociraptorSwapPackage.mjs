@@ -35,12 +35,20 @@ const sourceDir = path.resolve(
       "Allosaurus"
     )
 );
-const targetPackagePath = normalizePackagePath(
-  process.env.CMM_ALLOSAURUS_TARGET_PACKAGE ??
-    "/Game/Hybrid_Velociraptor/Meshes/SKM_Hybrid_Velociraptor_T_Pose"
+const defaultTargetPackagePaths = [
+  "/Game/Hybrid_Velociraptor/Meshes/SKM_Hybrid_Velociraptor_T_Pose",
+  "/Game/Hybrid_Velociraptor/Meshes/SKM_Deino_V2",
+  "/Game/UtahRaptor/Meshes/SKM_UtahRaptor_T_Pose",
+  "/Game/UtahRaptor/Meshes/SKM_UtahRaptor_V1"
+];
+const targetPackagePaths = parseTargetPackagePaths(
+  process.env.CMM_ALLOSAURUS_TARGET_PACKAGES ??
+    process.env.CMM_ALLOSAURUS_TARGET_PACKAGE
 );
-const targetDirectory = path.posix.dirname(targetPackagePath);
-const targetName = path.posix.basename(targetPackagePath);
+const targetPackagePath = targetPackagePaths[0];
+const targetDirectories = [
+  ...new Set(targetPackagePaths.map((packagePath) => path.posix.dirname(packagePath)))
+];
 const unrealEditor =
   process.env.CMM_UNREAL_EDITOR_CMD ??
   "C:\\Program Files\\Epic Games\\UE_5.5\\Engine\\Binaries\\Win64\\UnrealEditor-Cmd.exe";
@@ -105,7 +113,9 @@ const summary = {
   sourceFileCount: sourceHashes.length,
   sourceSha256,
   targetPackagePath,
-  targetObjectPath: `${targetPackagePath}.${targetName}`,
+  targetObjectPath: objectPathForPackage(targetPackagePath),
+  targetPackagePaths,
+  targetObjectPaths: targetPackagePaths.map(objectPathForPackage),
   steamBuildId,
   loader: "pak",
   containerFormat: "pak+iostore",
@@ -127,14 +137,15 @@ async function buildFixture() {
   const configRoot = path.join(fixtureRoot, "Config");
   const contentRoot = path.join(fixtureRoot, "Content");
   const sourceContentRoot = path.join(contentRoot, "Allosaurus");
-  const targetContentRoot = path.join(
-    contentRoot,
-    ...targetDirectory.replace(/^\/Game\/?/, "").split("/")
+  const targetContentRoots = targetDirectories.map((targetDirectory) =>
+    path.join(contentRoot, ...targetDirectory.replace(/^\/Game\/?/, "").split("/"))
   );
   const importScriptPath = path.join(fixtureRoot, "duplicate_allosaurus_mesh.py");
 
   await mkdir(configRoot, { recursive: true });
-  await mkdir(targetContentRoot, { recursive: true });
+  for (const targetContentRoot of targetContentRoots) {
+    await mkdir(targetContentRoot, { recursive: true });
+  }
   await cp(sourceDir, sourceContentRoot, { recursive: true, force: true });
   await writeFile(
     projectPath,
@@ -154,7 +165,9 @@ async function buildFixture() {
     path.join(configRoot, "DefaultGame.ini"),
     [
       "[/Script/UnrealEd.ProjectPackagingSettings]",
-      `+DirectoriesToAlwaysCook=(Path="${targetDirectory}")`,
+      ...targetDirectories.map(
+        (targetDirectory) => `+DirectoriesToAlwaysCook=(Path="${targetDirectory}")`
+      ),
       "bCookMapsOnly=False"
     ].join("\n"),
     "ascii"
@@ -164,22 +177,26 @@ async function buildFixture() {
     [
       "import unreal",
       "source_asset = '/Game/Allosaurus/Rigs/Allosaurus_Rig'",
-      `target_asset = '${targetPackagePath}'`,
-      `target_directory = '${targetDirectory}'`,
+      "targets = [",
+      ...targetPackagePaths.map(
+        (packagePath) => `    ('${packagePath}', '${path.posix.dirname(packagePath)}'),`
+      ),
+      "]",
       "asset = unreal.load_asset(source_asset)",
       "if asset is None:",
       "    raise RuntimeError('source Allosaurus skeletal mesh failed to load')",
-      "unreal.EditorAssetLibrary.make_directory(target_directory)",
-      "if unreal.EditorAssetLibrary.does_asset_exist(target_asset):",
-      "    unreal.EditorAssetLibrary.delete_asset(target_asset)",
-      "duplicated = unreal.EditorAssetLibrary.duplicate_asset(source_asset, target_asset)",
-      "if not duplicated:",
-      "    raise RuntimeError('Allosaurus skeletal mesh duplicate failed')",
-      "target = unreal.load_asset(target_asset)",
-      "if target is None:",
-      "    raise RuntimeError('target velociraptor skeletal mesh failed to load')",
-      "unreal.EditorAssetLibrary.save_loaded_asset(target)",
-      "unreal.log('CMM_ALLOSAURUS_SWAP_IMPORTED {}'.format(target.get_path_name()))"
+      "for target_asset, target_directory in targets:",
+      "    unreal.EditorAssetLibrary.make_directory(target_directory)",
+      "    if unreal.EditorAssetLibrary.does_asset_exist(target_asset):",
+      "        unreal.EditorAssetLibrary.delete_asset(target_asset)",
+      "    duplicated = unreal.EditorAssetLibrary.duplicate_asset(source_asset, target_asset)",
+      "    if not duplicated:",
+      "        raise RuntimeError('Allosaurus skeletal mesh duplicate failed for {}'.format(target_asset))",
+      "    target = unreal.load_asset(target_asset)",
+      "    if target is None:",
+      "        raise RuntimeError('target velociraptor skeletal mesh failed to load for {}'.format(target_asset))",
+      "    unreal.EditorAssetLibrary.save_loaded_asset(target)",
+      "    unreal.log('CMM_ALLOSAURUS_SWAP_IMPORTED {}'.format(target.get_path_name()))"
     ].join("\n"),
     "ascii"
   );
@@ -197,23 +214,25 @@ async function buildFixture() {
     ],
     path.join(fixtureRoot, "import.log")
   );
-  await runLogged(
-    unrealEditor,
-    [
-      toUnrealPath(projectPath),
-      "-run=cook",
-      "-targetplatform=Windows",
-      `-COOKDIR=${toUnrealPath(targetContentRoot)}`,
-      "-unversioned",
-      "-SkipCookingEditorContent",
-      "-NoDefaultMaps",
-      "-unattended",
-      "-nop4",
-      "-nosplash",
-      "-NoLogTimes"
-    ],
-    path.join(fixtureRoot, "cook.log")
-  );
+  for (const [index, targetContentRoot] of targetContentRoots.entries()) {
+    await runLogged(
+      unrealEditor,
+      [
+        toUnrealPath(projectPath),
+        "-run=cook",
+        "-targetplatform=Windows",
+        `-COOKDIR=${toUnrealPath(targetContentRoot)}`,
+        "-unversioned",
+        "-SkipCookingEditorContent",
+        "-NoDefaultMaps",
+        "-unattended",
+        "-nop4",
+        "-nosplash",
+        "-NoLogTimes"
+      ],
+      path.join(fixtureRoot, `cook-${index + 1}.log`)
+    );
+  }
 
   const cookedPlatformRoot = path.join(fixtureRoot, "Saved", "Cooked", "Windows");
   const cookedProjectRoot = path.join(cookedPlatformRoot, "Clawed");
@@ -311,7 +330,7 @@ async function writePackage(outputDirectory, containerPayloadPaths, source) {
     version,
     author: "Clawed Mod Manager",
     description:
-      "Prototype Pak/IoStore SkeletalMesh override that places the supplied Allosaurus mesh on Clawed's hybrid velociraptor mesh package path.",
+      "Prototype Pak/IoStore SkeletalMesh override that places the supplied Allosaurus mesh on Clawed's likely raptor mesh package paths.",
     game: "clawed",
     loader: "pak",
     dependencies: [],
@@ -324,9 +343,11 @@ async function writePackage(outputDirectory, containerPayloadPaths, source) {
   const readme = [
     `# ${modName}`,
     "",
-    "Target:",
+    "Targets:",
     "",
-    `- \`${targetPackagePath}.${targetName}\``,
+    ...targetPackagePaths.map(
+      (packagePath) => `- \`${objectPathForPackage(packagePath)}\``
+    ),
     "",
     "Source:",
     "",
@@ -334,7 +355,7 @@ async function writePackage(outputDirectory, containerPayloadPaths, source) {
     "",
     "Expected result:",
     "",
-    "- The hybrid velociraptor SkeletalMesh package path resolves to the cooked Allosaurus mesh.",
+    "- The listed raptor SkeletalMesh package paths resolve to cooked Allosaurus mesh assets.",
     "- Deployment uses CMM's normal Pak/IoStore path under `payload/Content/Paks/`.",
     "- This package does not change player authority, networking, anti-cheat behavior, save data, Blueprints, GameMode, PlayerController, or loose cooked files.",
     "- Gameplay assignment and host/client visibility still require live in-session validation."
@@ -371,49 +392,57 @@ async function writePackage(outputDirectory, containerPayloadPaths, source) {
 }
 
 function creatorAssets(payloadPaths, source) {
-  const targetObjectPath = `${targetPackagePath}.${targetName}`;
-  const targetVirtualPath = `/Clawed/Base${targetPackagePath.replace(/^\/Game/, "")}`;
   const replacementVirtualPath = packageVirtualPath(modId, version, payloadPaths[0]);
+  const targets = targetPackagePaths.map((packagePath) => {
+    const id = assetIdForPackagePath(packagePath);
+    const targetObjectPath = objectPathForPackage(packagePath);
+    const targetVirtualPath = baseVirtualPath(packagePath);
+    return {
+      packagePath,
+      targetAssetId: `target-${id}`,
+      replacementAssetId: `replacement-allosaurus-${id}`,
+      targetObjectPath,
+      targetVirtualPath
+    };
+  });
   return {
     schemaVersion: 1,
-    affectedAssets: [
+    affectedAssets: targets.flatMap((target) => [
       {
-        id: "target-hybrid-velociraptor-skeletal-mesh",
+        id: target.targetAssetId,
         assetClass: "SkeletalMesh",
-        packagePath: targetPackagePath,
-        objectPath: targetObjectPath,
-        virtualPath: targetVirtualPath,
+        packagePath: target.packagePath,
+        objectPath: target.targetObjectPath,
+        virtualPath: target.targetVirtualPath,
         source: "baseGame",
         role: "target",
         tags: ["model_visuals", "character_model_animation", "enemy_ai"]
       },
       {
-        id: "replacement-allosaurus-skeletal-mesh",
+        id: target.replacementAssetId,
         assetClass: "SkeletalMesh",
-        packagePath: targetPackagePath,
-        objectPath: targetObjectPath,
+        packagePath: target.packagePath,
+        objectPath: target.targetObjectPath,
         virtualPath: replacementVirtualPath,
         payloadPath: payloadPaths[0],
         source: "generated",
         role: "replacement",
         tags: ["model_visuals", "character_model_animation", "allosaurus"]
       }
-    ],
-    replacements: [
-      {
-        targetAssetId: "target-hybrid-velociraptor-skeletal-mesh",
-        replacementAssetId: "replacement-allosaurus-skeletal-mesh",
-        targetPackagePath,
-        targetObjectPath,
-        targetVirtualPath,
-        replacementPackagePath: targetPackagePath,
-        replacementObjectPath: targetObjectPath,
-        replacementVirtualPath,
-        payloadPaths,
-        deploymentRoute: "pak-iostore-existing-path",
-        validationState: "untested"
-      }
-    ],
+    ]),
+    replacements: targets.map((target) => ({
+      targetAssetId: target.targetAssetId,
+      replacementAssetId: target.replacementAssetId,
+      targetPackagePath: target.packagePath,
+      targetObjectPath: target.targetObjectPath,
+      targetVirtualPath: target.targetVirtualPath,
+      replacementPackagePath: target.packagePath,
+      replacementObjectPath: target.targetObjectPath,
+      replacementVirtualPath,
+      payloadPaths,
+      deploymentRoute: "pak-iostore-existing-path",
+      validationState: "untested"
+    })),
     cookTarget: {
       unrealVersion: "5.5",
       platform: "Windows",
@@ -435,9 +464,9 @@ function creatorAssets(payloadPaths, source) {
         rights: "userOwned"
       }
     ],
-    assetDependencies: [
+    assetDependencies: targets.flatMap((target) => [
       {
-        fromAssetId: "replacement-allosaurus-skeletal-mesh",
+        fromAssetId: target.replacementAssetId,
         toPackagePath: "/Game/Allosaurus/Materials/Allosaurus",
         toObjectPath: "/Game/Allosaurus/Materials/Allosaurus.Allosaurus",
         assetClass: "Material",
@@ -446,7 +475,7 @@ function creatorAssets(payloadPaths, source) {
         source: "samePackage"
       },
       {
-        fromAssetId: "replacement-allosaurus-skeletal-mesh",
+        fromAssetId: target.replacementAssetId,
         toPackagePath: "/Game/Allosaurus/Rigs/Allosaurus_Rig_Skeleton",
         toObjectPath: "/Game/Allosaurus/Rigs/Allosaurus_Rig_Skeleton.Allosaurus_Rig_Skeleton",
         assetClass: "Skeleton",
@@ -455,7 +484,7 @@ function creatorAssets(payloadPaths, source) {
         source: "samePackage"
       },
       {
-        fromAssetId: "replacement-allosaurus-skeletal-mesh",
+        fromAssetId: target.replacementAssetId,
         toPackagePath: "/Game/Allosaurus/Rigs/Allosaurus_Rig_Physics",
         toObjectPath: "/Game/Allosaurus/Rigs/Allosaurus_Rig_Physics.Allosaurus_Rig_Physics",
         assetClass: "PhysicsAsset",
@@ -463,7 +492,7 @@ function creatorAssets(payloadPaths, source) {
         required: false,
         source: "samePackage"
       }
-    ],
+    ]),
     textureBindings: [],
     exportEligibility: {
       state: "exportable",
@@ -483,19 +512,21 @@ async function findCookedAssetPayloadFiles(cookedProjectRoot) {
   if (payloadFiles.length === 0) {
     throw new Error("Cooked asset payload files were not generated.");
   }
-  const targetCookedAsset = path.join(
-    cookedProjectRoot,
-    "Content",
-    ...targetPackagePath.replace(/^\/Game\/?/, "").split(".")[0].split("/")
-  );
-  if (
-    !payloadFiles.some(
-      (file) =>
-        path.extname(file).toLowerCase() === ".uasset" &&
-        file.toLowerCase() === `${targetCookedAsset.toLowerCase()}.uasset`
-    )
-  ) {
-    throw new Error(`Cooked target mesh was not generated for ${targetPackagePath}.`);
+  for (const packagePath of targetPackagePaths) {
+    const targetCookedAsset = path.join(
+      cookedProjectRoot,
+      "Content",
+      ...packagePath.replace(/^\/Game\/?/, "").split(".")[0].split("/")
+    );
+    if (
+      !payloadFiles.some(
+        (file) =>
+          path.extname(file).toLowerCase() === ".uasset" &&
+          file.toLowerCase() === `${targetCookedAsset.toLowerCase()}.uasset`
+      )
+    ) {
+      throw new Error(`Cooked target mesh was not generated for ${packagePath}.`);
+    }
   }
   return payloadFiles.sort((left, right) => left.localeCompare(right));
 }
@@ -583,6 +614,36 @@ async function sha256File(targetPath) {
 
 function sha256Buffer(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function parseTargetPackagePaths(value) {
+  const values = value
+    ? value.split(/[,\r\n;]+/)
+    : defaultTargetPackagePaths;
+  const paths = [];
+  for (const candidate of values) {
+    const packagePath = normalizePackagePath(candidate.trim());
+    if (packagePath && !paths.includes(packagePath)) {
+      paths.push(packagePath);
+    }
+  }
+  return paths.length > 0 ? paths : defaultTargetPackagePaths;
+}
+
+function objectPathForPackage(packagePath) {
+  return `${packagePath}.${path.posix.basename(packagePath)}`;
+}
+
+function assetIdForPackagePath(packagePath) {
+  return packagePath
+    .replace(/^\/Game\/?/, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function baseVirtualPath(packagePath) {
+  return `/Clawed/Base${packagePath.replace(/^\/Game/, "")}`;
 }
 
 function normalizePackagePath(packagePath) {

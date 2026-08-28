@@ -36,6 +36,12 @@ const packagePath = path.resolve(
   process.env.CMM_ALLOSAURUS_SWAP_PACKAGE ??
     "release/prototype-mods/ClawedAllosaurusVelociraptorSwap.clawedmod"
 );
+const expectedTargetPackagePaths = [
+  "/Game/Hybrid_Velociraptor/Meshes/SKM_Hybrid_Velociraptor_T_Pose",
+  "/Game/Hybrid_Velociraptor/Meshes/SKM_Deino_V2",
+  "/Game/UtahRaptor/Meshes/SKM_UtahRaptor_T_Pose",
+  "/Game/UtahRaptor/Meshes/SKM_UtahRaptor_V1"
+].sort();
 const userDataRoot = path.resolve(
   process.env.CMM_ALLOSAURUS_SWAP_USER_DATA_DIR ??
     path.join(process.env.APPDATA ?? "", "clawed-mod-manager")
@@ -100,6 +106,11 @@ describe.runIf(liveEnabled)("live Allosaurus velociraptor swap deployment", () =
     const parsed = await packageService.parsePackage(packagePath);
     expect(parsed.manifest.id).toBe("ClawedAllosaurusVelociraptorSwap");
     expect(parsed.manifest.loader).toBe("pak");
+    expect(
+      parsed.manifest.creatorAssets?.replacements
+        .map((replacement) => replacement.targetPackagePath)
+        .sort()
+    ).toEqual(expectedTargetPackagePaths);
 
     let imported = await modLibraryService.importModPackage({ packagePath });
     if (
