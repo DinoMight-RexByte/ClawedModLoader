@@ -131,7 +131,8 @@ export type GameDiscovery = z.infer<typeof GameDiscoverySchema>;
 export const AppSettingsSchema = z.object({
   manualGameDirectory: z.string().nullable(),
   autoUpdatePackagedRuntime: z.boolean().default(true),
-  autoValidatePackagedRuntime: z.boolean().default(false)
+  autoValidatePackagedRuntime: z.boolean().default(false),
+  suppressAppUpdatePrompt: z.boolean().default(false)
 });
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
@@ -158,6 +159,15 @@ export const SetAutoValidatePackagedRuntimeRequestSchema = z
   .strict();
 export type SetAutoValidatePackagedRuntimeRequest = z.infer<
   typeof SetAutoValidatePackagedRuntimeRequestSchema
+>;
+
+export const SetSuppressAppUpdatePromptRequestSchema = z
+  .object({
+    enabled: z.boolean()
+  })
+  .strict();
+export type SetSuppressAppUpdatePromptRequest = z.infer<
+  typeof SetSuppressAppUpdatePromptRequestSchema
 >;
 
 export const AppUpdateStatusSchema = z.enum([

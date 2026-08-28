@@ -170,12 +170,20 @@ export function registerIpcHandlers(services: IpcServices): void {
     services.settingsService.setAutoValidatePackagedRuntime(request.enabled)
   );
 
+  registerHandler(ipcContracts.setSuppressAppUpdatePrompt, (request) =>
+    services.settingsService.setSuppressAppUpdatePrompt(request.enabled)
+  );
+
   registerHandler(ipcContracts.getAppUpdateSnapshot, async () =>
     services.appUpdateService.getSnapshot()
   );
 
   registerHandler(ipcContracts.checkForAppUpdates, () =>
     services.appUpdateService.checkForUpdates()
+  );
+
+  registerHandler(ipcContracts.downloadAppUpdate, () =>
+    services.appUpdateService.downloadAvailableUpdate()
   );
 
   registerHandler(ipcContracts.installAppUpdate, async () =>

@@ -15,7 +15,11 @@ import {
 import type { ReactElement, ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 
-import type { ProfileListSnapshot } from "../../shared/contracts/app";
+import type {
+  AppSettings,
+  AppUpdateSnapshot,
+  ProfileListSnapshot
+} from "../../shared/contracts/app";
 import logoUrl from "../../../assets/branding/logo.svg";
 import type { NavigationPage } from "../stores/appStore";
 import { useAppStore } from "../stores/appStore";
@@ -76,11 +80,23 @@ export function AppShell({
 }): ReactElement {
   const activePage = useAppStore((state) => state.activePage);
   const profileRevision = useAppStore((state) => state.profileRevision);
+  const settings = useAppStore((state) => state.appSettings);
   const bumpProfileRevision = useAppStore((state) => state.bumpProfileRevision);
+  const setSettings = useAppStore((state) => state.setAppSettings);
   const setActivePage = useAppStore((state) => state.setActivePage);
   const [profiles, setProfiles] = useState<ProfileListSnapshot | null>(null);
+  const [appUpdate, setAppUpdate] = useState<AppUpdateSnapshot | null>(null);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
+  const [promptBusy, setPromptBusy] = useState(false);
+  const [promptError, setPromptError] = useState<string | null>(null);
+  const [promptRemember, setPromptRemember] = useState(false);
+  const [promptDismissedVersion, setPromptDismissedVersion] = useState<
+    string | null
+  >(null);
+  const [acceptedUpdateVersion, setAcceptedUpdateVersion] = useState<
+    string | null
+  >(null);
 
   const loadProfiles = useCallback(async (): Promise<void> => {
     const snapshot = await window.cmm
@@ -98,6 +114,72 @@ export function AppShell({
   useEffect(() => {
     void loadProfiles();
   }, [loadProfiles, profileRevision]);
+
+  useEffect(() => {
+    void window.cmm
+      .getAppUpdateSnapshot()
+      .then(setAppUpdate)
+      .catch(() => undefined);
+    void window.cmm
+      .getAppSettings()
+      .then(setSettings)
+      .catch(() => undefined);
+    return window.cmm.onAppUpdateEvent(setAppUpdate);
+  }, [setSettings]);
+
+  const savePromptPreference = async (): Promise<void> => {
+    if (!promptRemember) {
+      return;
+    }
+
+    setSettings(
+      await window.cmm.setSuppressAppUpdatePrompt({
+        enabled: true
+      })
+    );
+  };
+
+  const dismissUpdatePrompt = async (version: string): Promise<void> => {
+    setPromptBusy(true);
+    setPromptError(null);
+
+    try {
+      await savePromptPreference();
+      setPromptDismissedVersion(version);
+    } catch {
+      setPromptError("The update prompt preference could not be saved.");
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
+  const downloadPromptUpdate = async (version: string): Promise<void> => {
+    setPromptBusy(true);
+    setPromptError(null);
+
+    try {
+      await savePromptPreference();
+      setPromptDismissedVersion(version);
+      setAcceptedUpdateVersion(version);
+      setAppUpdate(await window.cmm.downloadAppUpdate());
+    } catch {
+      setPromptError("The app update could not be downloaded.");
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
+  const installPromptUpdate = async (): Promise<void> => {
+    setPromptBusy(true);
+    setPromptError(null);
+
+    try {
+      setAppUpdate(await window.cmm.installAppUpdate());
+    } catch {
+      setPromptError("The downloaded app update could not be started.");
+      setPromptBusy(false);
+    }
+  };
 
   const switchProfile = async (profileId: string): Promise<void> => {
     if (!profiles || profileId === profiles.activeProfileId) {
@@ -141,6 +223,9 @@ export function AppShell({
               </div>
               <div className="mt-1 truncate text-lg font-semibold">
                 Clawed Mod Manager
+              </div>
+              <div className="mt-0.5 text-xs text-app-subtle">
+                Version {appUpdate?.currentVersion ?? "..."}
               </div>
             </div>
           </div>
@@ -195,6 +280,17 @@ export function AppShell({
           </div>
 
           <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2 sm:flex-none">
+            {appUpdateNotice(appUpdate) ? (
+              <button
+                className="inline-flex h-10 max-w-full items-center gap-2 rounded-md border border-app-border bg-app-surface px-3 text-sm font-medium text-app-muted hover:bg-app-surfaceRaised hover:text-app-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent"
+                onClick={() => setActivePage("settings")}
+                title="App update status"
+                type="button"
+              >
+                <Download aria-hidden="true" size={16} />
+                <span className="truncate">{appUpdateNotice(appUpdate)}</span>
+              </button>
+            ) : null}
             <label className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
               <ClipboardList
                 aria-hidden="true"
@@ -235,6 +331,160 @@ export function AppShell({
           </div>
         </div>
       </main>
+
+      <AppUpdatePrompt
+        acceptedVersion={acceptedUpdateVersion}
+        busy={promptBusy}
+        dismissedVersion={promptDismissedVersion}
+        error={promptError}
+        onDismiss={(version) => void dismissUpdatePrompt(version)}
+        onDownload={(version) => void downloadPromptUpdate(version)}
+        onInstall={() => void installPromptUpdate()}
+        onRememberChange={setPromptRemember}
+        remember={promptRemember}
+        settings={settings}
+        update={appUpdate}
+      />
+    </div>
+  );
+}
+
+function appUpdateNotice(update: AppUpdateSnapshot | null): string | null {
+  switch (update?.status) {
+    case "checking":
+      return "Checking for updates";
+    case "available":
+      return `Update ${update.availableVersion ?? ""} available`.trim();
+    case "downloading":
+      return update.progress
+        ? `Downloading ${Math.round(update.progress.percent)}%`
+        : "Downloading update";
+    case "downloaded":
+      return `Update ${update.availableVersion ?? ""} ready`.trim();
+    case "error":
+      return "Update check failed";
+    default:
+      return null;
+  }
+}
+
+function AppUpdatePrompt({
+  acceptedVersion,
+  busy,
+  dismissedVersion,
+  error,
+  onDismiss,
+  onDownload,
+  onInstall,
+  onRememberChange,
+  remember,
+  settings,
+  update
+}: {
+  acceptedVersion: string | null;
+  busy: boolean;
+  dismissedVersion: string | null;
+  error: string | null;
+  onDismiss(version: string): void;
+  onDownload(version: string): void;
+  onInstall(): void;
+  onRememberChange(remember: boolean): void;
+  remember: boolean;
+  settings: AppSettings | null;
+  update: AppUpdateSnapshot | null;
+}): ReactElement | null {
+  const version = update?.availableVersion ?? null;
+  const showAvailable =
+    update?.status === "available" &&
+    version !== null &&
+    settings?.suppressAppUpdatePrompt !== true &&
+    dismissedVersion !== version;
+  const showDownloaded =
+    update?.status === "downloaded" &&
+    version !== null &&
+    acceptedVersion === version;
+
+  if (!showAvailable && !showDownloaded) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-labelledby="app-update-prompt-title"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+    >
+      <div className="w-full max-w-md rounded-lg border border-app-border bg-app-surface p-5 shadow-xl">
+        <h2 className="text-lg font-semibold" id="app-update-prompt-title">
+          {showDownloaded ? "Update Ready" : "Update Available"}
+        </h2>
+        <p className="mt-2 text-sm text-app-muted">
+          {showDownloaded
+            ? `Version ${version} is ready to install. Restart CMM to finish the update.`
+            : `Version ${version} is available. Update CMM now?`}
+        </p>
+
+        {showAvailable ? (
+          <label className="mt-4 flex items-start gap-3 text-sm text-app-muted">
+            <input
+              checked={remember}
+              className="mt-1 h-4 w-4 accent-app-accent"
+              disabled={busy}
+              onChange={(event) => onRememberChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>Remember this setting and do not prompt me on launch.</span>
+          </label>
+        ) : null}
+
+        {error ? (
+          <div
+            className="mt-4 rounded-md border border-app-danger/40 bg-app-danger/10 p-3 text-sm text-app-danger"
+            role="alert"
+          >
+            {error}
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex flex-wrap justify-end gap-3">
+          {showAvailable ? (
+            <button
+              className="h-10 rounded-md border border-app-border px-4 text-sm font-semibold text-app-text hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+              disabled={busy}
+              onClick={() => {
+                if (version) {
+                  onDismiss(version);
+                }
+              }}
+              type="button"
+            >
+              Not Now
+            </button>
+          ) : null}
+          <button
+            className="h-10 rounded-md bg-app-accent px-4 text-sm font-semibold text-app-accentText focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+            disabled={busy}
+            onClick={() => {
+              if (showDownloaded) {
+                onInstall();
+                return;
+              }
+
+              if (version) {
+                onDownload(version);
+              }
+            }}
+            type="button"
+          >
+            {showDownloaded
+              ? "Restart to Update"
+              : busy
+                ? "Downloading"
+                : "Update Now"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

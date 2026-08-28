@@ -24,6 +24,7 @@ export interface AppUpdateProvider {
   allowPrerelease: boolean;
   fullChangelog: boolean;
   checkForUpdates(): Promise<unknown>;
+  downloadUpdate(): Promise<unknown>;
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void;
   on(event: "checking-for-update", listener: () => void): this;
   on(event: "update-available", listener: (info: UpdateInfo) => void): this;
@@ -38,6 +39,8 @@ export interface AppUpdateProvider {
 
 type SnapshotListener = (snapshot: AppUpdateSnapshot) => void;
 type Timer = ReturnType<typeof setTimeout> & { unref?: () => void };
+const defaultAutoCheckDelayMs = 1_000;
+const defaultAutoCheckIntervalMs = 6 * 60 * 60 * 1000;
 
 export class ElectronAppUpdateService implements AppUpdateServiceContract {
   private snapshot: AppUpdateSnapshot;
@@ -119,6 +122,38 @@ export class ElectronAppUpdateService implements AppUpdateServiceContract {
     return this.getSnapshot();
   }
 
+  async downloadAvailableUpdate(): Promise<AppUpdateSnapshot> {
+    if (!this.isPackaged) {
+      return this.getSnapshot();
+    }
+
+    if (this.snapshot.status === "downloaded") {
+      return this.getSnapshot();
+    }
+
+    if (this.snapshot.status !== "available") {
+      return this.setSnapshot({
+        message: "No app update is available to download.",
+        errorMessage: null
+      });
+    }
+
+    this.setSnapshot({
+      status: "downloading",
+      message: `Downloading version ${this.snapshot.availableVersion ?? "update"}.`,
+      errorMessage: null,
+      progress: null
+    });
+
+    try {
+      await this.updater.downloadUpdate();
+    } catch (error) {
+      this.recordError(error);
+    }
+
+    return this.getSnapshot();
+  }
+
   installDownloadedUpdate(): AppUpdateSnapshot {
     if (this.snapshot.status !== "downloaded") {
       return this.setSnapshot({
@@ -140,14 +175,20 @@ export class ElectronAppUpdateService implements AppUpdateServiceContract {
     }
 
     this.started = true;
+    const delayMs = this.options.autoCheckDelayMs ?? defaultAutoCheckDelayMs;
+    const intervalMs = this.options.autoCheckIntervalMs ?? defaultAutoCheckIntervalMs;
+    this.log("app_update_auto_checks_started", "requested", {
+      delayMs,
+      intervalMs
+    });
     this.autoCheckTimeout = setTimeout(() => {
       void this.checkForUpdates();
       this.autoCheckInterval = setInterval(
         () => void this.checkForUpdates(),
-        this.options.autoCheckIntervalMs ?? 6 * 60 * 60 * 1000
+        intervalMs
       ) as Timer;
       this.autoCheckInterval.unref?.();
-    }, this.options.autoCheckDelayMs ?? 10_000) as Timer;
+    }, delayMs) as Timer;
     this.autoCheckTimeout.unref?.();
   }
 
@@ -173,7 +214,7 @@ export class ElectronAppUpdateService implements AppUpdateServiceContract {
 
   private configureUpdater(): void {
     const updater = this.updater;
-    updater.autoDownload = true;
+    updater.autoDownload = false;
     updater.autoInstallOnAppQuit = true;
     updater.autoRunAppAfterInstall = true;
     updater.allowPrerelease = false;

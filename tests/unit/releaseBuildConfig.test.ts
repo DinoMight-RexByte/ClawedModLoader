@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -19,12 +19,13 @@ describe("release build config", () => {
       "assets/branding",
       "assets/runtime",
       "assets/unreal-decoder",
-      ".codex/clawed-game-file-map/20260814-current",
+      "assets/clawed-game-file-map/20260814-current",
       "release/official-launch-mods",
       "release/prototype-mods"
     ]);
 
     for (const blocked of [
+      ".codex/clawed-game-file-map",
       ".codex/live-validation",
       ".codex/pak-order-fixture",
       ".codex/fixture-candidates",
@@ -46,7 +47,7 @@ describe("release build config", () => {
       filter: ["**/*", "!*.pdb"]
     });
     expect(build.extraResources).toContainEqual({
-      from: ".codex/clawed-game-file-map/20260814-current",
+      from: "assets/clawed-game-file-map/20260814-current",
       to: "clawed-game-file-map/20260814-current"
     });
     expect(build.extraResources).toContainEqual({
@@ -92,10 +93,18 @@ describe("release build config", () => {
     );
     expect(packageJson.scripts.package).toContain("npm run package:available-mods");
     expect(packageJson.scripts.dist).toContain("npm run package:available-mods");
+    expect(packageJson.scripts.package).toContain("npm run verify:packaged-resources");
+    expect(packageJson.scripts.dist).toContain("npm run verify:packaged-resources");
     expect(packageJson.scripts.package.indexOf("npm run package:available-mods")).toBeLessThan(
       packageJson.scripts.package.indexOf("electron-builder")
     );
     expect(packageJson.scripts.dist.indexOf("npm run package:available-mods")).toBeLessThan(
+      packageJson.scripts.dist.indexOf("electron-builder")
+    );
+    expect(packageJson.scripts.package.indexOf("npm run verify:packaged-resources")).toBeLessThan(
+      packageJson.scripts.package.indexOf("electron-builder")
+    );
+    expect(packageJson.scripts.dist.indexOf("npm run verify:packaged-resources")).toBeLessThan(
       packageJson.scripts.dist.indexOf("electron-builder")
     );
     expect(packageJson.scripts["package:available-mods"]).not.toContain(
@@ -141,6 +150,9 @@ describe("release build config", () => {
     expect(packageJson.scripts["release:github"]).toContain(
       "npm run package:available-mods:github"
     );
+    expect(packageJson.scripts["release:github"]).toContain(
+      "npm run verify:packaged-resources"
+    );
     expect(packageJson.scripts["release:github"]).not.toContain(
       "npm run package:available-mods &&"
     );
@@ -151,6 +163,11 @@ describe("release build config", () => {
     expect(
       packageJson.scripts["release:github"].indexOf(
         "npm run package:available-mods:github"
+      )
+    ).toBeLessThan(packageJson.scripts["release:github"].indexOf("electron-builder"));
+    expect(
+      packageJson.scripts["release:github"].indexOf(
+        "npm run verify:packaged-resources"
       )
     ).toBeLessThan(packageJson.scripts["release:github"].indexOf("electron-builder"));
     expect(packageJson.build.win.verifyUpdateCodeSignature).toBe(false);
@@ -166,6 +183,22 @@ describe("release build config", () => {
 
     expect(releaseScript).toContain("npm run release -- -v <x.y.z>");
     expect(releaseScript).toContain("--version <x.y.z>");
+  });
+
+  it("keeps the Clawed asset map as a tracked packaged resource", () => {
+    const files = [
+      "clawed-all-files-and-container-entries.csv",
+      "clawed-physical-files.csv",
+      "clawed-shipping-manifest-entries.csv",
+      "clawed-container-entries-annotated.csv",
+      "clawed-map-summary.json"
+    ];
+
+    for (const fileName of files) {
+      const filePath = `assets/clawed-game-file-map/20260814-current/${fileName}`;
+      expect(existsSync(filePath)).toBe(true);
+      expect(statSync(filePath).size).toBeGreaterThan(0);
+    }
   });
 
   it("uses the active npm CLI when the local release command runs npm subcommands", () => {

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProgressInfo, UpdateDownloadedEvent, UpdateInfo } from "electron-updater";
 
 import {
@@ -16,11 +16,17 @@ class FakeUpdater extends EventEmitter {
   allowPrerelease = true;
   fullChangelog = true;
   checks = 0;
+  downloads = 0;
   installArgs: [boolean | undefined, boolean | undefined] | null = null;
 
   async checkForUpdates(): Promise<null> {
     this.checks += 1;
     this.emit("checking-for-update");
+    return null;
+  }
+
+  async downloadUpdate(): Promise<null> {
+    this.downloads += 1;
     return null;
   }
 
@@ -50,6 +56,10 @@ class FakeUpdater extends EventEmitter {
 }
 
 describe("ElectronAppUpdateService", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("reports app updates as unsupported outside packaged builds", async () => {
     const updater = new FakeUpdater();
     const service = createService(updater, false);
@@ -72,6 +82,14 @@ describe("ElectronAppUpdateService", () => {
 
     await service.checkForUpdates();
     updater.emitAvailable(updateInfo("0.2.0"));
+
+    expect(updater.downloads).toBe(0);
+    expect(service.getSnapshot()).toMatchObject({
+      status: "available",
+      availableVersion: "0.2.0"
+    });
+
+    await service.downloadAvailableUpdate();
     updater.emitProgress({
       percent: 50,
       delta: 5,
@@ -85,10 +103,11 @@ describe("ElectronAppUpdateService", () => {
     });
     service.installDownloadedUpdate();
 
-    expect(updater.autoDownload).toBe(true);
+    expect(updater.autoDownload).toBe(false);
     expect(updater.autoInstallOnAppQuit).toBe(true);
     expect(updater.allowPrerelease).toBe(false);
     expect(updater.checks).toBe(1);
+    expect(updater.downloads).toBe(1);
     expect(service.getSnapshot()).toMatchObject({
       status: "downloaded",
       availableVersion: "0.2.0",
@@ -111,6 +130,17 @@ describe("ElectronAppUpdateService", () => {
       status: "error",
       errorMessage: "network unavailable"
     });
+  });
+
+  it("starts packaged auto checks without a long startup delay", async () => {
+    vi.useFakeTimers();
+    const updater = new FakeUpdater();
+    const service = createService(updater, true);
+
+    service.startAutoChecks();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(updater.checks).toBe(1);
   });
 });
 

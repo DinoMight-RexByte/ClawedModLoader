@@ -22,6 +22,7 @@ import {
   RendererErrorReportRequestSchema,
   SetAutoValidatePackagedRuntimeRequestSchema,
   SetAutoUpdatePackagedRuntimeRequestSchema,
+  SetSuppressAppUpdatePromptRequestSchema,
   ValidatePackagedRuntimeResultSchema
 } from "../../src/shared/contracts/app";
 
@@ -70,7 +71,8 @@ describe("IPC contracts", () => {
     expect(AppSettingsSchema.parse({ manualGameDirectory: null })).toEqual({
       manualGameDirectory: null,
       autoUpdatePackagedRuntime: true,
-      autoValidatePackagedRuntime: false
+      autoValidatePackagedRuntime: false,
+      suppressAppUpdatePrompt: false
     });
     expect(
       SetAutoUpdatePackagedRuntimeRequestSchema.parse({ enabled: false })
@@ -78,6 +80,9 @@ describe("IPC contracts", () => {
     expect(
       SetAutoValidatePackagedRuntimeRequestSchema.parse({ enabled: false })
     ).toEqual({ enabled: false });
+    expect(
+      SetSuppressAppUpdatePromptRequestSchema.parse({ enabled: true })
+    ).toEqual({ enabled: true });
   });
 
   it("validates app update snapshots", () => {

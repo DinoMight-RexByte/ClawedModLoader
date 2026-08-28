@@ -38,6 +38,7 @@ import { WindowsSteamPathProvider } from "./steamPathProvider";
 import { LocalUnrealMappingsService } from "./unrealMappingsService";
 
 const BUNDLED_UE4SS_VERSION = "ue4ss-v3.0.1-1028-gd7e7826d";
+const CLAWED_FILE_MAP_VERSION = "20260814-current";
 
 export type MainServiceDependencies = Omit<
   CoreServices,
@@ -266,15 +267,25 @@ function getBundledClawedFileMapPath(): string {
     return path.join(
       electronProcess.resourcesPath,
       "clawed-game-file-map",
-      "20260814-current"
+      CLAWED_FILE_MAP_VERSION
     );
+  }
+
+  const assetMapRoot = path.join(
+    process.cwd(),
+    "assets",
+    "clawed-game-file-map",
+    CLAWED_FILE_MAP_VERSION
+  );
+  if (existsSync(assetMapRoot)) {
+    return assetMapRoot;
   }
 
   return path.join(
     process.cwd(),
     ".codex",
     "clawed-game-file-map",
-    "20260814-current"
+    CLAWED_FILE_MAP_VERSION
   );
 }
 

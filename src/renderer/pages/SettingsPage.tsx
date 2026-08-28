@@ -83,11 +83,12 @@ function appUpdateProgressLabel(update: AppUpdateSnapshot | null): string | null
 export function SettingsPage(): ReactElement {
   const themeMode = useAppStore((state) => state.themeMode);
   const accentColor = useAppStore((state) => state.accentColor);
+  const settings = useAppStore((state) => state.appSettings);
   const setThemeMode = useAppStore((state) => state.setThemeMode);
   const setAccentColor = useAppStore((state) => state.setAccentColor);
+  const setSettings = useAppStore((state) => state.setAppSettings);
   const [discovery, setDiscovery] = useState<GameDiscovery | null>(null);
   const [runtime, setRuntime] = useState<RuntimeSnapshot | null>(null);
-  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateSnapshot | null>(null);
   const [runtimeResult, setRuntimeResult] =
     useState<ImportUe4ssRuntimeResult | null>(null);
@@ -136,7 +137,7 @@ export function SettingsPage(): ReactElement {
     } else {
       setSettingsError("Settings are unavailable.");
     }
-  }, []);
+  }, [setSettings]);
 
   const loadAppUpdate = useCallback(async () => {
     const nextUpdate = await window.cmm
@@ -242,6 +243,21 @@ export function SettingsPage(): ReactElement {
     }
   };
 
+  const setSuppressAppUpdatePrompt = async (
+    enabled: boolean
+  ): Promise<void> => {
+    setBusy(true);
+    setSettingsError(null);
+
+    try {
+      setSettings(await window.cmm.setSuppressAppUpdatePrompt({ enabled }));
+    } catch {
+      setSettingsError("The app update prompt preference could not be saved.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const checkForAppUpdates = async (): Promise<void> => {
     setAppUpdateBusy(true);
     setAppUpdateError(null);
@@ -250,6 +266,19 @@ export function SettingsPage(): ReactElement {
       setAppUpdate(await window.cmm.checkForAppUpdates());
     } catch {
       setAppUpdateError("The app update check could not be completed.");
+    } finally {
+      setAppUpdateBusy(false);
+    }
+  };
+
+  const downloadAppUpdate = async (): Promise<void> => {
+    setAppUpdateBusy(true);
+    setAppUpdateError(null);
+
+    try {
+      setAppUpdate(await window.cmm.downloadAppUpdate());
+    } catch {
+      setAppUpdateError("The app update could not be downloaded.");
     } finally {
       setAppUpdateBusy(false);
     }
@@ -326,12 +355,21 @@ export function SettingsPage(): ReactElement {
                 appUpdateBusy ||
                 appUpdate?.status === "unsupported" ||
                 appUpdate?.status === "checking" ||
-                appUpdate?.status === "downloading"
+                appUpdate?.status === "downloading" ||
+                appUpdate?.status === "downloaded"
               }
               onClick={() => void checkForAppUpdates()}
               type="button"
             >
               Check Now
+            </button>
+            <button
+              className="h-10 rounded-md border border-app-border px-4 text-sm font-semibold text-app-text hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
+              disabled={appUpdateBusy || appUpdate?.status !== "available"}
+              onClick={() => void downloadAppUpdate()}
+              type="button"
+            >
+              Update Now
             </button>
             <button
               className="h-10 rounded-md border border-app-border px-4 text-sm font-semibold text-app-text hover:bg-app-surfaceRaised focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent disabled:opacity-60"
@@ -351,6 +389,31 @@ export function SettingsPage(): ReactElement {
         />
 
         <dl className="mt-5 grid gap-3">
+          <div className="grid gap-2 md:grid-cols-[190px_1fr]">
+            <dt className="text-sm text-app-subtle">Launch prompt</dt>
+            <dd>
+              <label className="flex max-w-2xl items-start gap-3 rounded-md border border-app-border bg-app-surfaceRaised p-3">
+                <input
+                  checked={settings?.suppressAppUpdatePrompt ?? false}
+                  className="mt-1 h-4 w-4 accent-app-accent"
+                  disabled={busy || !settings}
+                  onChange={(event) =>
+                    void setSuppressAppUpdatePrompt(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span className="grid gap-1">
+                  <span className="text-sm font-medium text-app-text">
+                    Do not prompt me on launch when an app update is found
+                  </span>
+                  <span className="text-sm text-app-muted">
+                    CMM still checks for updates and leaves manual update
+                    controls here.
+                  </span>
+                </span>
+              </label>
+            </dd>
+          </div>
           <div className="grid gap-2 md:grid-cols-[190px_1fr]">
             <dt className="text-sm text-app-subtle">Current version</dt>
             <dd>

@@ -336,11 +336,13 @@ export interface SettingsServiceContract {
   setManualGameDirectory(gameDirectory: string | null): Promise<AppSettings>;
   setAutoUpdatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
   setAutoValidatePackagedRuntime(enabled: boolean): Promise<AppSettings>;
+  setSuppressAppUpdatePrompt(enabled: boolean): Promise<AppSettings>;
 }
 
 export interface AppUpdateServiceContract {
   getSnapshot(): AppUpdateSnapshot;
   checkForUpdates(): Promise<AppUpdateSnapshot>;
+  downloadAvailableUpdate(): Promise<AppUpdateSnapshot>;
   installDownloadedUpdate(): AppUpdateSnapshot;
   startAutoChecks(): void;
   onSnapshot(listener: (snapshot: AppUpdateSnapshot) => void): () => void;

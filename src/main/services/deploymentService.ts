@@ -1735,7 +1735,8 @@ function defaultDeploymentSettings(): AppSettings {
   return {
     manualGameDirectory: null,
     autoUpdatePackagedRuntime: true,
-    autoValidatePackagedRuntime: false
+    autoValidatePackagedRuntime: false,
+    suppressAppUpdatePrompt: false
   };
 }
 

@@ -1051,6 +1051,7 @@ test.beforeEach(async ({ page }) => {
         manualGameDirectory: string | null;
         autoUpdatePackagedRuntime: boolean;
         autoValidatePackagedRuntime: boolean;
+        suppressAppUpdatePrompt: boolean;
       };
       appUpdate: {
         status: string;
@@ -1073,7 +1074,8 @@ test.beforeEach(async ({ page }) => {
       settings: {
         manualGameDirectory: null,
         autoUpdatePackagedRuntime: true,
-        autoValidatePackagedRuntime: false
+        autoValidatePackagedRuntime: false,
+        suppressAppUpdatePrompt: false
       },
       appUpdate: {
         status: "unsupported",
@@ -1088,6 +1090,20 @@ test.beforeEach(async ({ page }) => {
         progress: null
       }
     };
+    const appUpdateListeners = new Set<
+      (snapshot: typeof state.appUpdate) => void
+    >();
+    const emitAppUpdate = (
+      patch: Partial<typeof state.appUpdate>
+    ): typeof state.appUpdate => {
+      state.appUpdate = {
+        ...state.appUpdate,
+        ...patch
+      };
+      appUpdateListeners.forEach((listener) => listener(state.appUpdate));
+      return state.appUpdate;
+    };
+    (window as any).__emitCmmAppUpdate = emitAppUpdate;
 
     const activeSummary = () =>
       state.profiles.find((profile) => profile.id === state.activeProfileId) ??
@@ -1900,18 +1916,45 @@ test.beforeEach(async ({ page }) => {
         };
         return state.settings;
       },
+      setSuppressAppUpdatePrompt: async ({ enabled }: { enabled: boolean }) => {
+        state.settings = {
+          ...state.settings,
+          suppressAppUpdatePrompt: enabled
+        };
+        return state.settings;
+      },
       getAppUpdateSnapshot: async () => state.appUpdate,
       checkForAppUpdates: async () => {
-        state.appUpdate = {
-          ...state.appUpdate,
+        return emitAppUpdate({
           status: "notAvailable",
           message: "Clawed Mod Manager is up to date.",
           lastCheckedAt: now
-        };
+        });
+      },
+      downloadAppUpdate: async () => {
+        (window as any).__cmmAppUpdateDownloadRequested = true;
+        emitAppUpdate({
+          status: "downloading",
+          message: `Downloading version ${state.appUpdate.availableVersion ?? "update"}.`,
+          progress: null
+        });
+        return emitAppUpdate({
+          status: "downloaded",
+          message: `Version ${state.appUpdate.availableVersion ?? "update"} is ready to install.`,
+          downloadedAt: now,
+          progress: null
+        });
+      },
+      installAppUpdate: async () => {
+        (window as any).__cmmAppUpdateInstallRequested = true;
         return state.appUpdate;
       },
-      installAppUpdate: async () => state.appUpdate,
-      onAppUpdateEvent: () => () => undefined,
+      onAppUpdateEvent: (callback: (snapshot: typeof state.appUpdate) => void) => {
+        appUpdateListeners.add(callback);
+        return () => {
+          appUpdateListeners.delete(callback);
+        };
+      },
       getLifecycleSnapshot: async () => ({
         lifecycleState: "STOPPED",
         processId: null,
@@ -3056,6 +3099,114 @@ test.beforeEach(async ({ page }) => {
 
     (window as any).cmm = cmm;
   });
+});
+
+test("prompts for detected app updates and downloads after acceptance", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+  await expect(page.getByText("Version 0.1.0")).toBeVisible();
+
+  await page.evaluate(() => {
+    (window as any).__emitCmmAppUpdate({
+      status: "available",
+      availableVersion: "0.2.0",
+      releaseName: "0.2.0",
+      releaseDate: "2026-08-28T12:00:00.000Z",
+      message: "Version 0.2.0 is available.",
+      lastCheckedAt: "2026-08-28T12:00:00.000Z"
+    });
+  });
+
+  const availableDialog = page.getByRole("dialog", {
+    name: "Update Available"
+  });
+  await expect(availableDialog).toBeVisible();
+  await availableDialog.getByRole("button", { name: "Update Now" }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean((window as any).__cmmAppUpdateDownloadRequested))
+    )
+    .toBe(true);
+
+  const readyDialog = page.getByRole("dialog", { name: "Update Ready" });
+  await expect(readyDialog).toBeVisible();
+  await readyDialog.getByRole("button", { name: "Restart to Update" }).click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => Boolean((window as any).__cmmAppUpdateInstallRequested))
+    )
+    .toBe(true);
+});
+
+test("remembers suppressed launch prompts and keeps manual update controls", async ({
+  page
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Finish Later" }).click();
+
+  await page.evaluate(() => {
+    (window as any).__emitCmmAppUpdate({
+      status: "available",
+      availableVersion: "0.2.0",
+      releaseName: "0.2.0",
+      releaseDate: "2026-08-28T12:00:00.000Z",
+      message: "Version 0.2.0 is available.",
+      lastCheckedAt: "2026-08-28T12:00:00.000Z"
+    });
+  });
+
+  const dialog = page.getByRole("dialog", { name: "Update Available" });
+  await expect(dialog).toBeVisible();
+  await dialog
+    .getByLabel("Remember this setting and do not prompt me on launch.")
+    .check();
+  await dialog.getByRole("button", { name: "Not Now" }).click();
+  await expect(dialog).toBeHidden();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async () =>
+          (await (window as any).cmm.getAppSettings()).suppressAppUpdatePrompt
+      )
+    )
+    .toBe(true);
+
+  await page.evaluate(() => {
+    (window as any).__emitCmmAppUpdate({
+      status: "available",
+      availableVersion: "0.2.1",
+      releaseName: "0.2.1",
+      releaseDate: "2026-08-28T12:05:00.000Z",
+      message: "Version 0.2.1 is available.",
+      lastCheckedAt: "2026-08-28T12:05:00.000Z"
+    });
+  });
+
+  await expect(
+    page.getByRole("dialog", { name: "Update Available" })
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Update 0.2.1 available" })
+  ).toBeVisible();
+
+  await page.getByRole("button", { exact: true, name: "Settings" }).click();
+  await expect(page.getByRole("heading", { name: "Preferences" })).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        async () =>
+          (await (window as any).cmm.getAppSettings()).suppressAppUpdatePrompt
+      )
+    )
+    .toBe(true);
+  await expect(
+    page.getByLabel("Do not prompt me on launch when an app update is found")
+  ).toBeChecked();
+  await expect(page.getByRole("button", { name: "Update Now" })).toBeEnabled();
 });
 
 test("smoke-tests first run and primary desktop flows", async ({ page }) => {

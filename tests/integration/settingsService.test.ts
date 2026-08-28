@@ -45,7 +45,8 @@ describe("settings service", () => {
     expect(settings).toEqual({
       manualGameDirectory: "C:\\Games\\Clawed",
       autoUpdatePackagedRuntime: true,
-      autoValidatePackagedRuntime: false
+      autoValidatePackagedRuntime: false,
+      suppressAppUpdatePrompt: false
     });
   });
 
@@ -77,5 +78,20 @@ describe("settings service", () => {
 
     expect(settings.autoValidatePackagedRuntime).toBe(false);
     expect(raw.autoValidatePackagedRuntime).toBe(false);
+  });
+
+  it("persists app update prompt preference", async () => {
+    tempRoot = await mkdtemp(path.join(os.tmpdir(), "cmm-settings-"));
+    const service = new JsonSettingsService(
+      new FakeStorageService(createStorageLayout(tempRoot))
+    );
+
+    const settings = await service.setSuppressAppUpdatePrompt(true);
+    const raw = JSON.parse(
+      await readFile(path.join(tempRoot, "settings.json"), "utf8")
+    );
+
+    expect(settings.suppressAppUpdatePrompt).toBe(true);
+    expect(raw.suppressAppUpdatePrompt).toBe(true);
   });
 });

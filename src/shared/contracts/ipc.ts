@@ -86,6 +86,7 @@ import {
   RuntimeSnapshotSchema,
   SetAutoValidatePackagedRuntimeRequestSchema,
   SetAutoUpdatePackagedRuntimeRequestSchema,
+  SetSuppressAppUpdatePromptRequestSchema,
   SetModOrderPositionRequestSchema,
   SetModEnabledRequestSchema,
   ValidatePackagedRuntimeResultSchema
@@ -178,6 +179,7 @@ import type {
   RuntimeSnapshot,
   SetAutoValidatePackagedRuntimeRequest,
   SetAutoUpdatePackagedRuntimeRequest,
+  SetSuppressAppUpdatePromptRequest,
   SetModOrderPositionRequest,
   SetModEnabledRequest,
   ValidatePackagedRuntimeResult
@@ -195,8 +197,10 @@ export const IPC_CHANNELS = {
   setAutoUpdatePackagedRuntime: "cmm:settings:setAutoUpdatePackagedRuntime",
   setAutoValidatePackagedRuntime:
     "cmm:settings:setAutoValidatePackagedRuntime",
+  setSuppressAppUpdatePrompt: "cmm:settings:setSuppressAppUpdatePrompt",
   getAppUpdateSnapshot: "cmm:appUpdate:getSnapshot",
   checkForAppUpdates: "cmm:appUpdate:check",
+  downloadAppUpdate: "cmm:appUpdate:download",
   installAppUpdate: "cmm:appUpdate:install",
   appUpdateEvent: "cmm:appUpdate:event",
   getLifecycleSnapshot: "cmm:process:getLifecycleSnapshot",
@@ -337,6 +341,11 @@ export const ipcContracts = {
     SetAutoValidatePackagedRuntimeRequest,
     AppSettings
   >,
+  setSuppressAppUpdatePrompt: {
+    channel: IPC_CHANNELS.setSuppressAppUpdatePrompt,
+    requestSchema: SetSuppressAppUpdatePromptRequestSchema,
+    responseSchema: AppSettingsSchema
+  } satisfies IpcContract<SetSuppressAppUpdatePromptRequest, AppSettings>,
   getAppUpdateSnapshot: {
     channel: IPC_CHANNELS.getAppUpdateSnapshot,
     requestSchema: EmptyRequestSchema,
@@ -344,6 +353,11 @@ export const ipcContracts = {
   } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
   checkForAppUpdates: {
     channel: IPC_CHANNELS.checkForAppUpdates,
+    requestSchema: EmptyRequestSchema,
+    responseSchema: AppUpdateSnapshotSchema
+  } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
+  downloadAppUpdate: {
+    channel: IPC_CHANNELS.downloadAppUpdate,
     requestSchema: EmptyRequestSchema,
     responseSchema: AppUpdateSnapshotSchema
   } satisfies IpcContract<EmptyRequest, AppUpdateSnapshot>,
@@ -734,8 +748,12 @@ export interface CmmApi {
   setAutoValidatePackagedRuntime(
     request: SetAutoValidatePackagedRuntimeRequest
   ): Promise<AppSettings>;
+  setSuppressAppUpdatePrompt(
+    request: SetSuppressAppUpdatePromptRequest
+  ): Promise<AppSettings>;
   getAppUpdateSnapshot(): Promise<AppUpdateSnapshot>;
   checkForAppUpdates(): Promise<AppUpdateSnapshot>;
+  downloadAppUpdate(): Promise<AppUpdateSnapshot>;
   installAppUpdate(): Promise<AppUpdateSnapshot>;
   onAppUpdateEvent(
     callback: (snapshot: AppUpdateSnapshot) => void

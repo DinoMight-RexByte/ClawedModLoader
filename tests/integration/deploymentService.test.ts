@@ -70,7 +70,8 @@ class FakeSettingsService implements SettingsServiceContract {
     private settings: AppSettings = {
       manualGameDirectory: null,
       autoUpdatePackagedRuntime: true,
-      autoValidatePackagedRuntime: false
+      autoValidatePackagedRuntime: false,
+      suppressAppUpdatePrompt: false
     }
   ) {}
 
@@ -107,6 +108,14 @@ class FakeSettingsService implements SettingsServiceContract {
     };
     return this.settings;
   }
+
+  async setSuppressAppUpdatePrompt(enabled: boolean): Promise<AppSettings> {
+    this.settings = {
+      ...this.settings,
+      suppressAppUpdatePrompt: enabled
+    };
+    return this.settings;
+  }
 }
 
 let tempRoot: string | null = null;
@@ -138,6 +147,7 @@ async function makeServices(
     manualGameDirectory: null,
     autoUpdatePackagedRuntime: true,
     autoValidatePackagedRuntime: false,
+    suppressAppUpdatePrompt: false,
     ...settings
   });
   const resolvedRuntimeOptions = runtimeOptions

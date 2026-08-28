@@ -43,10 +43,13 @@ const api: CmmApi = {
     invoke(ipcContracts.setAutoUpdatePackagedRuntime, request),
   setAutoValidatePackagedRuntime: (request) =>
     invoke(ipcContracts.setAutoValidatePackagedRuntime, request),
+  setSuppressAppUpdatePrompt: (request) =>
+    invoke(ipcContracts.setSuppressAppUpdatePrompt, request),
   getAppUpdateSnapshot: () =>
     invoke(ipcContracts.getAppUpdateSnapshot, {}),
   checkForAppUpdates: () =>
     invoke(ipcContracts.checkForAppUpdates, {}),
+  downloadAppUpdate: () => invoke(ipcContracts.downloadAppUpdate, {}),
   installAppUpdate: () => invoke(ipcContracts.installAppUpdate, {}),
   onAppUpdateEvent: (callback) => {
     const listener = (_event: IpcRendererEvent, raw: unknown) => {

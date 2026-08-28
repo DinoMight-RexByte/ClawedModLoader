@@ -43,6 +43,7 @@
     "build:unreal-decoder": "dotnet publish tools/unreal-decoder/CmmUnrealDecoder/CmmUnrealDecoder.csproj -c Release -r win-x64 --self-contained true -o assets/unreal-decoder",
     "build": "npm run clean && npm run build:main && npm run build:preload && npm run build:renderer",
     "verify": "npm run lint && npm run typecheck && npm run test:unit && npm run test:integration && npm run build",
+    "verify:packaged-resources": "node scripts/verifyPackagedResources.mjs",
     "package:manual-smoke": "node scripts/createManualSmokePackage.mjs",
     "package:manual-logo-test": "node scripts/createManualTextureOverridePackage.mjs",
     "package:manual-qa": "npm run package:manual-smoke && npm run package:manual-logo-test && node scripts/createManualQaReadme.mjs",
@@ -58,10 +59,10 @@
     "package:available-mods:github": "cross-env CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE=1 npm run package:available-mods",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
-    "package": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && electron-builder --dir",
-    "dist": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && electron-builder --publish never",
+    "package": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && npm run verify:packaged-resources && electron-builder --dir",
+    "dist": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && npm run verify:packaged-resources && electron-builder --publish never",
     "release": "node scripts/runReleaseFlow.mjs",
-    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && npm run package:available-mods:github && electron-builder --publish always --config.forceCodeSigning=true"
+    "release:github": "node scripts/requireWindowsCodeSigningCredentials.mjs && npm run build && npm run build:unreal-decoder && npm run package:available-mods:github && npm run verify:packaged-resources && electron-builder --publish always --config.forceCodeSigning=true"
   },
   "cmm": {
     "status": "ux-release-hardening",
@@ -112,7 +113,7 @@
         ]
       },
       {
-        "from": ".codex/clawed-game-file-map/20260814-current",
+        "from": "assets/clawed-game-file-map/20260814-current",
         "to": "clawed-game-file-map/20260814-current"
       },
       {
