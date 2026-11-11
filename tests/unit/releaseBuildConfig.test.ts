@@ -77,6 +77,12 @@ describe("release build config", () => {
       "npm run package && npm run package:official-launch-mods"
     );
     expect(officialLaunchScript).toContain(
+      "assets\", \"available-mods\", folderName"
+    );
+    expect(officialLaunchScript).toContain(
+      "packagedResourceOutputRoot"
+    );
+    expect(officialLaunchScript).not.toContain(
       "CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE"
     );
   });
@@ -86,7 +92,7 @@ describe("release build config", () => {
       "npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup"
     );
     expect(packageJson.scripts["package:available-mods:github"]).toBe(
-      "cross-env CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE=1 npm run package:available-mods"
+      "npm run package:available-mods"
     );
     expect(packageJson.scripts["package:manual-qa"]).toBe(
       "npm run package:manual-smoke && npm run package:manual-logo-test && node scripts/createManualQaReadme.mjs"
@@ -114,8 +120,34 @@ describe("release build config", () => {
       "package:optimization-dev-plugins"
     );
     expect(packageJson.scripts["package:available-mods"]).not.toContain(
+      "package:game-tweaker-plugin"
+    );
+    expect(packageJson.scripts["package:available-mods"]).not.toContain(
+      "package:game-tweaker-widget-probe"
+    );
+    expect(packageJson.scripts["package:available-mods"]).not.toContain(
       "package:manual-qa"
     );
+  });
+
+  it("verifies required bundled mod archive contents before packaging", () => {
+    const verifier = readFileSync("scripts/verifyPackagedResources.mjs", "utf8");
+    const logoPackage =
+      "assets/available-mods/official-launch-mods/ModsActiveTitleLogo.clawedmod";
+    const logoSource = "assets/branding/clawed-mods-active.png";
+
+    expect(existsSync(logoPackage)).toBe(true);
+    expect(statSync(logoPackage).size).toBeGreaterThan(0);
+    expect(existsSync(logoSource)).toBe(true);
+    expect(statSync(logoSource).size).toBeGreaterThan(0);
+    expect(verifier).toContain("ModsActiveTitleLogo.clawedmod");
+    expect(verifier).toContain("payload/Content/Paks/ModsActiveTitleLogo.pak");
+    expect(verifier).toContain("CoopCatchupTeleport.clawedmod");
+    expect(verifier).toContain("0.2.6-prototype.20261111");
+    expect(verifier).toContain("cmm_catchup_scan");
+    expect(verifier).toContain("client_no_authority_host_required");
+    expect(verifier).toContain("RegisterBeginPlayPostHook");
+    expect(verifier).toContain(":ClientRestart");
   });
 
   it("publishes app updates only through the explicit GitHub release command", () => {

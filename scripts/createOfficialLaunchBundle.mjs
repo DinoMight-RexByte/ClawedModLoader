@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -9,28 +9,30 @@ const unpackedRoot = path.join(releaseRoot, "win-unpacked");
 const folderName = "official-launch-mods";
 const outputRoot = path.join(releaseRoot, folderName);
 const unpackedOutputRoot = path.join(unpackedRoot, folderName);
+const packagedResourceOutputRoot = path.join(
+  unpackedRoot,
+  "resources",
+  "available-mods",
+  folderName
+);
+const prebuiltRoot = path.resolve("assets", "available-mods", folderName);
 const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
-const includeTextureOverride =
-  process.env.CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE !== "1";
 const officialZipPath = path.join(
   releaseRoot,
   `Clawed-Mod-Manager-${packageJson.version}-official-launch-win-x64.zip`
 );
 const hasUnpacked = await exists(unpackedRoot);
+const hasPackagedResources = await exists(path.dirname(packagedResourceOutputRoot));
 const packages = [
-  ...(includeTextureOverride
-    ? [
-        {
-          id: "ModsActiveTitleLogo",
-          file: "ModsActiveTitleLogo.clawedmod",
-          name: "Mods Active Title Logo",
-          role: "Mods Active title logo",
-          loader: "pak",
-          validation:
-            "Generated Pak/IoStore title-logo package; live texture validation is not rerun by this script."
-        }
-      ]
-    : []),
+  {
+    id: "ModsActiveTitleLogo",
+    file: "ModsActiveTitleLogo.clawedmod",
+    name: "Mods Active Title Logo",
+    role: "Mods Active title logo",
+    loader: "pak",
+    validation:
+      "Generated Pak/IoStore title-logo package; live texture validation is not rerun by this script."
+  },
   {
     id: "CoopSessionGuard",
     file: "CoopSessionGuard.clawedmod",
@@ -55,12 +57,12 @@ await cleanDir(outputRoot);
 if (hasUnpacked) {
   await cleanDir(unpackedOutputRoot);
 }
-
-if (includeTextureOverride) {
-  await runPackageScript("createManualTextureOverridePackage.mjs", {
-    CMM_TEXTURE_OVERRIDE_OUTPUT_DIR: outputRoot,
-    CMM_TEXTURE_OVERRIDE_UNPACKED_OUTPUT_DIR: unpackedOutputRoot
-  });
+if (hasPackagedResources) {
+  await cleanDir(packagedResourceOutputRoot);
+}
+await copyPrebuiltPackage("ModsActiveTitleLogo", outputRoot);
+if (hasUnpacked) {
+  await copyPrebuiltPackage("ModsActiveTitleLogo", unpackedOutputRoot);
 }
 await runPackageScript("createCoopSessionGuardPackage.mjs", {
   CMM_COOP_SESSION_GUARD_OUTPUT_DIR: outputRoot,
@@ -70,6 +72,11 @@ await runPackageScript("createCoopCatchupTeleportPackage.mjs", {
   CMM_COOP_CATCHUP_OUTPUT_DIR: outputRoot,
   CMM_COOP_CATCHUP_UNPACKED_OUTPUT_DIR: unpackedOutputRoot
 });
+if (hasPackagedResources) {
+  for (const item of packages) {
+    await copyPackageArtifacts(item.id, outputRoot, packagedResourceOutputRoot);
+  }
+}
 
 await writeBundleFiles(outputRoot, "release/official-launch-mods");
 if (hasUnpacked) {
@@ -77,6 +84,14 @@ if (hasUnpacked) {
     unpackedOutputRoot,
     "release/win-unpacked/official-launch-mods"
   );
+}
+if (hasPackagedResources) {
+  await writeBundleFiles(
+    packagedResourceOutputRoot,
+    "release/win-unpacked/resources/available-mods/official-launch-mods"
+  );
+}
+if (hasUnpacked) {
   await createOfficialZip();
 }
 
@@ -84,6 +99,9 @@ process.stdout.write(
   [
     path.relative(process.cwd(), outputRoot),
     hasUnpacked ? path.relative(process.cwd(), unpackedOutputRoot) : null,
+    hasPackagedResources
+      ? path.relative(process.cwd(), packagedResourceOutputRoot)
+      : null,
     hasUnpacked ? path.relative(process.cwd(), officialZipPath) : null
   ]
     .filter(Boolean)
@@ -116,6 +134,20 @@ async function runProcess(command, args, label, env = process.env) {
       reject(new Error(`${label} failed with exit code ${code}.`));
     });
   });
+}
+
+async function copyPrebuiltPackage(modId, targetRoot) {
+  await copyPackageArtifacts(modId, prebuiltRoot, targetRoot);
+}
+
+async function copyPackageArtifacts(modId, sourceRoot, targetRoot) {
+  await mkdir(targetRoot, { recursive: true });
+  for (const suffix of [".clawedmod", ".README.md"]) {
+    const sourcePath = path.join(sourceRoot, `${modId}${suffix}`);
+    if (await exists(sourcePath)) {
+      await copyFile(sourcePath, path.join(targetRoot, `${modId}${suffix}`));
+    }
+  }
 }
 
 async function createOfficialZip() {
@@ -174,12 +206,10 @@ async function writeBundleFiles(targetRoot, displayPath) {
 
 function readme() {
   const packageLines = [
-    includeTextureOverride
-      ? "- `ModsActiveTitleLogo.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route."
-      : null,
+    "- `ModsActiveTitleLogo.clawedmod`: replaces the title/menu logo with the Mods Active image through the Pak/IoStore route.",
     "- `CoopSessionGuard.clawedmod`: UE4SS co-op session guard prototype with guarded session commands, failure logging, broad lifecycle hooks disabled, and no package-level player-count cap.",
     "- `CoopCatchupTeleport.clawedmod`: manual-only host-smart diagnostic N-player UE4SS co-op catch-up teleport hotfix; automatic start/load hooks are disabled."
-  ].filter(Boolean);
+  ];
 
   return [
     "# Official Launch Mods",

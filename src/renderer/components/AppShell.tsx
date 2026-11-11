@@ -177,6 +177,7 @@ export function AppShell({
       setAppUpdate(await window.cmm.installAppUpdate());
     } catch {
       setPromptError("The downloaded app update could not be started.");
+    } finally {
       setPromptBusy(false);
     }
   };

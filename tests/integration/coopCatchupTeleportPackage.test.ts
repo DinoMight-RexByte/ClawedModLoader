@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -48,7 +48,7 @@ describe("CoopCatchupTeleport package", () => {
 
     expect(parsed.manifest).toMatchObject({
       id: modId,
-      version: "0.2.4-prototype.20260824",
+      version: "0.2.6-prototype.20261111",
       loader: "ue4ss",
       game: "clawed",
       conflicts: ["ClawedCoopCatchupTeleport"],
@@ -67,9 +67,15 @@ describe("CoopCatchupTeleport package", () => {
       }
     });
     expect(parsed.hasChecksums).toBe(true);
-    expect(lua).toContain("attempt_smart_catchup");
+    expect(lua).toContain(`version=${parsed.manifest.version}|`);
+    expect(await readFile(path.resolve("scripts/verifyPackagedResources.mjs"), "utf8")).toContain(`const catchupVersion = "${parsed.manifest.version}";`);
+    expect(lua).toContain("discover_request");
     expect(lua).toContain("catchup_target_candidates");
     expect(lua).toContain("collect_player_states");
+    expect(lua).toContain("player_array:ForEach(function(_, state)");
+    expect(lua).toContain("add_state(state:get())");
+    expect(lua).not.toContain("pairs(player_array)");
+    expect(lua).not.toContain("ipairs({ record.pawn, record.controller, record.state })");
     expect(lua).toContain("client_no_authority_host_required");
     expect(lua).toContain("cmm_catchup_host");
     expect(lua).toContain("cmm_catchup_local");
@@ -82,6 +88,15 @@ describe("CoopCatchupTeleport package", () => {
     expect(lua).toContain("FlushNetDormancy");
     expect(lua).toContain("teleport_verify");
     expect(lua).toContain("verified=");
+    expect(lua).toContain("local_host_excluded");
+    expect(lua).toContain("verification_delays = { 250, 1000, 2500 }");
+    expect(lua).toContain("stage_timing");
+    expect(lua).toContain("request_busy");
+    expect(lua).not.toContain("LastAuthoritativeSpawn");
+    expect(lua).not.toContain("K2_SetWorldLocation");
+    expect(lua).not.toContain("TeleportToNoCheck");
+    expect(lua).not.toContain('find_all("Pawn")');
+    expect(lua).not.toContain('find_all("Controller")');
     expect(lua).toContain("cooldown_reset");
     expect(lua).toContain("host_context");
     expect(lua).toContain("player_record");

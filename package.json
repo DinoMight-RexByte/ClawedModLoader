@@ -1,6 +1,6 @@
 {
   "name": "clawed-mod-manager",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "description": "Windows desktop mod manager and launcher for Clawed.",
   "author": "Clawed Mod Manager Contributors",
@@ -56,7 +56,7 @@
     "package:save-backup": "node scripts/createSaveBackupPackage.mjs",
     "package:allosaurus-velociraptor-swap": "node scripts/createAllosaurusVelociraptorSwapPackage.mjs",
     "package:available-mods": "npm run package:official-launch-mods && npm run package:coop-session-guard && npm run package:coop-catchup && npm run package:coop-capacity8 && npm run package:player-name-repair && npm run package:save-backup",
-    "package:available-mods:github": "cross-env CMM_OFFICIAL_LAUNCH_SKIP_TEXTURE_OVERRIDE=1 npm run package:available-mods",
+    "package:available-mods:github": "npm run package:available-mods",
     "package:coop-reliability-plugin": "node scripts/createClawedCoopReliabilityPluginPackage.mjs",
     "package:optimization-dev-plugins": "node scripts/createClawedOptimizationDeveloperPlugins.mjs",
     "package": "npm run build && npm run build:unreal-decoder && npm run package:available-mods && npm run verify:packaged-resources && electron-builder --dir",
@@ -185,6 +185,7 @@
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
     "vitest": "^4.1.10",
-    "wait-on": "^9.1.0"
+    "wait-on": "^9.1.0",
+    "fengari": "^0.1.5"
   }
 }
